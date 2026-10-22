@@ -17,6 +17,13 @@ import { resolvePlatformPath } from "./path-utils.js";
 import { MediaStore } from "./media-store.js";
 import { UploadStore } from "./upload-store.js";
 
+const { findExternalSessionHolderMock } = vi.hoisted(() => ({
+  findExternalSessionHolderMock: vi.fn(async () => null as null | { kind: string; pid: number; description: string }),
+}));
+vi.mock("./session-holders.js", () => ({
+  findExternalSessionHolder: findExternalSessionHolderMock,
+}));
+
 const {
   getSessionHistoryMock,
   getCodexSessionHistoryMock,
@@ -2567,6 +2574,36 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         resumeRequestId: "req-attach",
       }),
     );
+    bridge.close();
+  });
+
+  it("refuses to resume a session held by another claude process unless forking", async () => {
+    getSessionHistoryMock.mockResolvedValue([]);
+    findExternalSessionHolderMock.mockResolvedValueOnce({ kind: "background", pid: 77, description: 'claude --bg session "job" (pid 77)' });
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const manager = (bridge as any).sessionManager;
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+
+    await (bridge as any).handleClientMessage(
+      { type: "resume_session", sessionId: "claude-held-1", projectPath: "/tmp/project-a", resumeRequestId: "req-held" },
+      ws,
+    );
+    await vi.waitFor(() => {
+      const sends = ws.send.mock.calls.map((c: unknown[]) => JSON.parse(c[0] as string));
+      expect(sends).toContainEqual(
+        expect.objectContaining({ type: "error", errorCode: "session_held_externally", requestId: "req-held" }),
+      );
+    });
+    expect(manager.list()).toHaveLength(0);
+
+    // With forkSession the holder is not even consulted.
+    findExternalSessionHolderMock.mockClear();
+    await (bridge as any).handleClientMessage(
+      { type: "resume_session", sessionId: "claude-held-1", projectPath: "/tmp/project-a", forkSession: true },
+      ws,
+    );
+    await vi.waitFor(() => expect(manager.list().length).toBe(1));
+    expect(findExternalSessionHolderMock).not.toHaveBeenCalled();
     bridge.close();
   });
 
@@ -6841,8 +6878,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       },
       ws,
     );
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.waitFor(() => expect(createSpy.mock.calls.length).toBeGreaterThanOrEqual(2));
 
     expect(createSpy.mock.calls[0]?.[1]?.permissionMode).toBe("auto");
     expect(createSpy.mock.calls[1]?.[1]?.permissionMode).toBe("default");

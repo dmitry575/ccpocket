@@ -674,6 +674,22 @@ interface PendingPermission {
   input: Record<string, unknown>;
   announcingRequest?: boolean;
   resolutionEventsPending?: ServerMessage[];
+  /** Auto-deny timer; cleared when the request is answered. */
+  timeoutId?: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * How long an unanswered permission request may block a session before it is
+ * denied automatically. A session waiting for approval keeps its ~300 MB
+ * `claude` process alive and is never evicted, so an abandoned request must
+ * not wait forever. BRIDGE_PERMISSION_TIMEOUT_MINUTES; 0 disables.
+ */
+export function permissionTimeoutMs(): number {
+  const raw = process.env.BRIDGE_PERMISSION_TIMEOUT_MINUTES;
+  if (raw === undefined || raw === "") return 60 * 60 * 1000;
+  const minutes = Number(raw);
+  if (!Number.isFinite(minutes) || minutes <= 0) return 0;
+  return minutes * 60 * 1000;
 }
 
 // PermissionResult is imported from @anthropic-ai/claude-agent-sdk
@@ -1617,10 +1633,37 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
 
       signal.addEventListener("abort", () => {
         if (this.pendingPermissions.has(toolUseId)) {
+          if (pending.timeoutId) clearTimeout(pending.timeoutId);
           this.pendingPermissions.delete(toolUseId);
-          resolve({ behavior: "deny", message: "Permission request timed out" });
+          resolve({ behavior: "deny", message: "Permission request aborted" });
         }
       }, { once: true });
+
+      const timeoutMs = permissionTimeoutMs();
+      if (timeoutMs > 0) {
+        pending.timeoutId = setTimeout(() => {
+          if (this.pendingPermissions.get(toolUseId) !== pending) return;
+          const minutes = Math.round(timeoutMs / 60_000);
+          console.warn(
+            `[sdk-process] Permission request ${toolUseId} (${toolName}) unanswered for ${minutes} min; denying`,
+          );
+          this.resolvePendingPermission(
+            toolUseId,
+            pending,
+            {
+              behavior: "deny",
+              message: `No answer from the user within ${minutes} minutes; the request was denied automatically.`,
+            },
+            {
+              type: "tool_result",
+              toolUseId,
+              content: `Permission request timed out after ${minutes} minutes and was denied.`,
+              permissionOutcome: "rejected",
+            } as ServerMessage,
+          );
+        }, timeoutMs);
+        pending.timeoutId.unref?.();
+      }
     });
   }
 
@@ -1635,6 +1678,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     const entries = [...this.pendingPermissions];
     this.pendingPermissions.clear();
     for (const [toolUseId, pending] of entries) {
+      if (pending.timeoutId) clearTimeout(pending.timeoutId);
       pending.resolve({ behavior: "deny", message: reason });
       const event: ServerMessage = { type: "permission_resolved", toolUseId };
       if (pending.announcingRequest) {
@@ -1654,6 +1698,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     if (this.pendingPermissions.get(toolUseId) !== pending) return;
 
     this.pendingPermissions.delete(toolUseId);
+    if (pending.timeoutId) clearTimeout(pending.timeoutId);
     pending.resolve(result);
     if (this.pendingPermissions.size === 0) {
       this.setStatus("running");

@@ -57,6 +57,30 @@ cd /root/ccpocket && git fetch origin && git checkout worktree-windows-installer
 | `BRIDGE_MAX_LIVE_SESSIONS` | `5` | жёсткий предел живых процессов агентов: сначала вытесняются простаивающие, потом отказ `session_limit_reached` |
 | `BRIDGE_DISABLE_MDNS` | `1` | на сервере mDNS не нужен |
 
+## Токены устройств (вместо одного общего ключа)
+
+Мост принимает и общий `BRIDGE_API_KEY`, и именные токены устройств. Токены хранятся хешами в `/root/.ccpocket/devices.json` (права 600), мост перечитывает файл при изменении, перезапуск не нужен.
+
+```bash
+cd /root/ccpocket/packages/bridge
+BRIDGE_PUBLIC_WS_URL=wss://167.104.102.253:8766 node dist/cli.js devices add "Телефон"   # печатает токен, ссылку и QR
+node dist/cli.js devices list
+node dist/cli.js devices rotate <id>   # новый токен для того же устройства
+node dist/cli.js devices revoke <id>   # токен перестаёт работать сразу
+```
+
+В приложении устройство подключается своим токеном (адрес тот же, ключ = токен). Общий ключ можно оставить как запасной или убрать из `/etc/ccpocket-bridge.env`, когда у всех устройств есть свои токены.
+
+## Прочие настройки форка
+
+| Переменная | Значение по умолчанию | Зачем |
+|---|---|---|
+| `BRIDGE_PERMISSION_TIMEOUT_MINUTES` | `60` | неотвеченный запрос разрешения отклоняется сам, процесс освобождается; `0` отключает |
+| `BRIDGE_FIREBASE_API_KEY` | ключ проекта автора | свой проект Firebase для push |
+| `BRIDGE_PUSH_RELAY_URL` | функция автора | адрес своей облачной функции `relay` (папка `functions`) |
+
+Возобновление сессии, которую уже держит `claude --bg` или терминал, запущенный с `--resume <id>`, мост отклоняет с кодом `session_held_externally`; в приложении включите «Fork session on resume», чтобы продолжить в копии.
+
 ## Релизы форка
 
 - Только Windows: тег `windows-setup/v<версия>+<сборка>` → workflow `windows-installer.yml` (установщик + zip).

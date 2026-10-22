@@ -2,7 +2,8 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setupProxy } from "./proxy.js";
-import { isLoopbackHost, isRequestAuthorized, parseRequestUrl } from "./auth.js";
+import { authenticateRequest, isAuthConfigured, isLoopbackHost, parseRequestUrl } from "./auth.js";
+import { DeviceTokenStore } from "./device-tokens.js";
 import { BridgeWebSocketServer } from "./websocket.js";
 import { ImageStore } from "./image-store.js";
 import { MediaStore } from "./media-store.js";
@@ -40,6 +41,10 @@ export async function startServer() {
   const PORT = parseBridgePort();
   const HOST = process.env.BRIDGE_HOST ?? "0.0.0.0";
   const API_KEY = process.env.BRIDGE_API_KEY;
+  // Named per-device tokens (ccpocket-bridge devices add|revoke|rotate),
+  // accepted alongside the master key.
+  const deviceTokens = new DeviceTokenStore();
+  const authConfig = { apiKey: API_KEY, devices: deviceTokens };
   const MDNS_ENABLED = shouldAdvertiseMdns(
     process.platform,
     !!process.env.BRIDGE_DISABLE_MDNS,
@@ -64,8 +69,11 @@ export async function startServer() {
     console.error("[bridge] Uncaught exception:", err);
   });
 
-  if (API_KEY) {
-    console.log("[bridge] API key authentication enabled");
+  const activeDevices = deviceTokens.active().length;
+  if (API_KEY || activeDevices > 0) {
+    console.log(
+      `[bridge] Authentication enabled (${API_KEY ? "master key" : "no master key"}, ${activeDevices} device token(s) in ${deviceTokens.filePath})`,
+    );
   } else if (!isLoopbackHost(HOST) && process.env.BRIDGE_ALLOW_NO_AUTH !== "1") {
     // Without a key every client that can reach the port gets a shell on this
     // machine through Claude. Refuse to listen on a non-loopback address.
@@ -76,8 +84,9 @@ export async function startServer() {
     );
     process.exit(1);
   } else {
-    console.warn("[bridge] WARNING: API key authentication is disabled");
+    console.warn("[bridge] WARNING: authentication is disabled");
   }
+  void isAuthConfigured; // re-exported helper used by HTTP handlers below via authenticateRequest
 
   if (!MDNS_ENABLED) {
     console.log(
@@ -220,7 +229,7 @@ export async function startServer() {
       return;
     }
     const pathname = requestUrl.pathname;
-    const authorized = isRequestAuthorized(req, API_KEY);
+    const authorized = authenticateRequest(req, authConfig).ok;
     const unauthorized = () => {
       res.writeHead(401, {
         "Content-Type": "application/json",
@@ -329,6 +338,7 @@ export async function startServer() {
   wsServer = new BridgeWebSocketServer({
     server: httpServer,
     apiKey: API_KEY,
+    deviceTokens,
     allowedDirs: ALLOWED_DIRS,
     fileDownloadAllowAllPaths: process.env.BRIDGE_FILE_DOWNLOAD_ALLOW_ALL_PATHS === "1",
     imageStore,

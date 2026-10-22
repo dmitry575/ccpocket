@@ -17,7 +17,11 @@ kept small and local.
 | Capacity | `BRIDGE_MAX_LIVE_SESSIONS`, `BRIDGE_MAX_IDLE_SESSIONS`; idle sessions with live background tasks are never evicted | 30 idle `claude` processes do not fit in 4 GB; a backgrounded command wakes the session later. |
 | Permissions | pending requests are denied and `permission_resolved` is sent on interrupt/stop/result; tool actions are routed by request id, never by "newest session" | Approval cards stayed open and a blind approve could hit another session. |
 | Files / git | diff images resolve symlinks and re-check allowed roots; branch names validated with `git check-ref-format`; timeouts on every git call | Symlink read outside the project; `--orphan`-style names; a hung `git pull` froze the bridge. |
-| Deploy | `deploy/` (systemd unit, nginx TLS proxy, install script), fork-only Windows installer workflow | See `deploy/README.md`. |
+| Device tokens | `ccpocket-bridge devices add/list/rotate/revoke/remove`; hashes in `~/.ccpocket/devices.json`; accepted next to `BRIDGE_API_KEY`; connection log names the device | One shared key could not be revoked per device. |
+| Permission timeout | `BRIDGE_PERMISSION_TIMEOUT_MINUTES` (60): unanswered requests are denied, `permission_resolved` + `tool_result` sent | A waiting session held its process forever and was never evicted. |
+| External holder | resume refused with `session_held_externally` when `~/.claude/sessions` or `ps` shows another `claude` on the same id (`--resume`/`--session-id`); `forkSession` bypasses | Two writers on one transcript. Interactive `/resume` picks are not detectable. |
+| Push | `BRIDGE_FIREBASE_API_KEY`, `BRIDGE_PUSH_RELAY_URL` | Point the relay at your own Firebase project instead of upstream's. |
+| Deploy | `deploy/` (systemd unit, nginx TLS proxy, install script), fork-only Windows installer and all-platforms release workflows | See `deploy/README.md`. |
 
 ## Deliberately not changed
 
@@ -33,9 +37,8 @@ kept small and local.
   possible but needs client-side filtering plus fixtures; deferred.
 - Upstream workflows (`windows-release.yml` etc.) are untouched; the fork adds
   `windows-installer.yml` instead.
-- Single shared `BRIDGE_API_KEY`. Per-device tokens would need a client
-  change in the pairing flow; nginx `limit_req`/`limit_conn` and the
-  constant-time check are the mitigation for now.
+- The pairing UI in the app still shows one "API key" field: a device token
+  is pasted there like the master key. No client change was needed.
 
 ## Known remaining weaknesses
 

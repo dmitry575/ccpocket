@@ -27,7 +27,12 @@ type PushRelayOpPayload =
 
 type PushRelayRequestPayload = PushRelayOpPayload & { bridgeId: string };
 
-const DEFAULT_RELAY_URL = "https://us-central1-ccpocket-ca33b.cloudfunctions.net/relay";
+// Cloud Function that forwards notifications to FCM. Defaults to upstream's
+// deployment; BRIDGE_PUSH_RELAY_URL points it at your own Firebase project
+// (deploy the `functions/` package there).
+const DEFAULT_RELAY_URL =
+  process.env.BRIDGE_PUSH_RELAY_URL?.trim() ||
+  "https://us-central1-ccpocket-ca33b.cloudfunctions.net/relay";
 
 export class PushRelayClient {
   private readonly relayUrl: string;

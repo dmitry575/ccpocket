@@ -17,7 +17,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-const FIREBASE_API_KEY = "AIzaSyAptNnokWPqJIgv2Lr3I8ETN6bqZb5BGvc";
+// Web API key of the Firebase project that hosts the push relay. Defaults to
+// upstream's project; set BRIDGE_FIREBASE_API_KEY to use your own project
+// (together with BRIDGE_PUSH_RELAY_URL and an app built with its config).
+const FIREBASE_API_KEY =
+  process.env.BRIDGE_FIREBASE_API_KEY?.trim() || "AIzaSyAptNnokWPqJIgv2Lr3I8ETN6bqZb5BGvc";
 const SIGN_UP_URL = `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${FIREBASE_API_KEY}`;
 const REFRESH_URL = `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`;
 

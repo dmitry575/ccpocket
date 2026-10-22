@@ -17,6 +17,8 @@ const BOOLEAN_FLAGS = new Set([
 
 export interface ParsedCliArgs {
   command?: string;
+  /** Positional arguments including the command itself (index 0). */
+  positionals: string[];
   flags: Map<string, string | true>;
   helpRequested: boolean;
   versionRequested: boolean;
@@ -73,6 +75,7 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
 
   return {
     command,
+    positionals,
     flags,
     helpRequested: flags.has("help") || command === "help",
     versionRequested: flags.has("version") || command === "version",

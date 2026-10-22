@@ -2035,6 +2035,51 @@ describe("buildAskUserAnswers", () => {
   });
 });
 
+describe("SdkProcess permission request timeout", () => {
+  it("denies an unanswered request after BRIDGE_PERMISSION_TIMEOUT_MINUTES", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("BRIDGE_PERMISSION_TIMEOUT_MINUTES", "2");
+    try {
+      const proc = new SdkProcess();
+      const messages: ServerMessage[] = [];
+      proc.on("message", (message) => messages.push(message));
+      const promise = (proc as any).waitForPermission(
+        "tool-t",
+        "Bash",
+        { command: "ls" },
+        new AbortController().signal,
+      ) as Promise<{ behavior: string; message?: string }>;
+      expect(proc.getPendingPermissions()).toHaveLength(1);
+      vi.advanceTimersByTime(2 * 60 * 1000 + 1);
+      const result = await promise;
+      expect(result.behavior).toBe("deny");
+      expect(result.message).toContain("2 minutes");
+      expect(proc.getPendingPermissions()).toHaveLength(0);
+      expect(messages).toContainEqual({ type: "permission_resolved", toolUseId: "tool-t" });
+      expect(messages).toContainEqual(
+        expect.objectContaining({ type: "tool_result", toolUseId: "tool-t", permissionOutcome: "rejected" }),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not arm a timer when the timeout is disabled", () => {
+    vi.useFakeTimers();
+    vi.stubEnv("BRIDGE_PERMISSION_TIMEOUT_MINUTES", "0");
+    try {
+      const proc = new SdkProcess();
+      void (proc as any).waitForPermission("tool-u", "Bash", {}, new AbortController().signal);
+      vi.advanceTimersByTime(24 * 60 * 60 * 1000);
+      expect(proc.getPendingPermissions()).toHaveLength(1);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("SdkProcess pending permissions on interrupt/stop/result", () => {
   function pendingProcess() {
     const proc = new SdkProcess();

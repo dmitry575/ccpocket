@@ -40,17 +40,57 @@ export function presentedApiKey(req: Pick<IncomingMessage, "url" | "headers">): 
   return url?.searchParams.get("token") ?? null;
 }
 
+/** Anything that can resolve a presented token to a named device. */
+export interface DeviceAuthenticator {
+  authenticate(token: string | null | undefined): { id: string; name: string } | null;
+  /** True when at least one active device token exists. */
+  active(): unknown[];
+}
+
+export interface AuthConfig {
+  apiKey?: string | null;
+  devices?: DeviceAuthenticator | null;
+}
+
+export type AuthResult =
+  | { ok: true; via: "open" }
+  | { ok: true; via: "master" }
+  | { ok: true; via: "device"; device: { id: string; name: string } }
+  | { ok: false };
+
+/** True when some credential is configured (master key or any active device). */
+export function isAuthConfigured(config: AuthConfig): boolean {
+  return Boolean(config.apiKey) || Boolean(config.devices && config.devices.active().length > 0);
+}
+
 /**
- * True when the request may proceed. With no key configured every request is
- * allowed (the bridge refuses to start without a key on a non-loopback host,
- * see index.ts), otherwise the presented key must match in constant time.
+ * Authenticate a request against the master key and the device tokens.
+ * With nothing configured every request is allowed (the bridge refuses to
+ * start that way on a non-loopback host, see index.ts). All comparisons are
+ * constant time.
+ */
+export function authenticateRequest(
+  req: Pick<IncomingMessage, "url" | "headers">,
+  config: AuthConfig,
+): AuthResult {
+  if (!isAuthConfigured(config)) return { ok: true, via: "open" };
+  const presented = presentedApiKey(req);
+  const masterOk = config.apiKey ? secretsMatch(presented, config.apiKey) : false;
+  const device = config.devices ? config.devices.authenticate(presented) : null;
+  if (masterOk) return { ok: true, via: "master" };
+  if (device) return { ok: true, via: "device", device: { id: device.id, name: device.name } };
+  return { ok: false };
+}
+
+/**
+ * True when the request may proceed. Thin wrapper over
+ * {@link authenticateRequest} for callers that only have the master key.
  */
 export function isRequestAuthorized(
   req: Pick<IncomingMessage, "url" | "headers">,
   apiKey: string | null | undefined,
 ): boolean {
-  if (!apiKey) return true;
-  return secretsMatch(presentedApiKey(req), apiKey);
+  return authenticateRequest(req, { apiKey }).ok;
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"]);

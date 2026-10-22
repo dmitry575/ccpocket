@@ -9,7 +9,9 @@ import { lstat, readFile, readlink, realpath, stat, unlink } from "node:fs/promi
 import { resolve, extname, basename, relative, posix, win32 } from "node:path";
 import { promisify } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
-import { isRequestAuthorized } from "./auth.js";
+import { authenticateRequest } from "./auth.js";
+import type { DeviceTokenStore } from "./device-tokens.js";
+import { findExternalSessionHolder } from "./session-holders.js";
 import { textPreview } from "./text-preview.js";
 import { consumeFinderProof, verifyFinderSocketProof, revealInFinder } from "./finder-reveal.js";
 import {
@@ -753,6 +755,8 @@ function mergeRecentSessionPages(sessions: unknown[]): unknown[] {
 export interface BridgeServerOptions {
   server: HttpServer;
   apiKey?: string;
+  /** Per-device tokens accepted in addition to the master key. */
+  deviceTokens?: DeviceTokenStore;
   allowedDirs?: string[];
   fileDownloadAllowAllPaths?: boolean;
   imageStore?: ImageStore;
@@ -805,6 +809,7 @@ export class BridgeWebSocketServer {
   private wss: WebSocketServer;
   private sessionManager: SessionManager;
   private apiKey: string | null;
+  private deviceTokens: DeviceTokenStore | null;
   private allowedDirs: string[];
   private fileDownloadAllowAllPaths: boolean;
   private imageStore: ImageStore | null;
@@ -920,6 +925,7 @@ export class BridgeWebSocketServer {
       deltaBatchMaxChars,
     } = options;
     this.apiKey = apiKey ?? null;
+    this.deviceTokens = options.deviceTokens ?? null;
     this.allowedDirs = allowedDirs ?? [];
     this.fileDownloadAllowAllPaths = options.fileDownloadAllowAllPaths ?? false;
     this.imageStore = imageStore ?? null;
@@ -1035,13 +1041,21 @@ export class BridgeWebSocketServer {
       // API key authentication: constant-time comparison, token from the
       // Authorization header or the ?token= query parameter. The URL is parsed
       // against a constant base so a hostile Host header cannot throw here.
-      if (!isRequestAuthorized(req, this.apiKey)) {
+      const auth = authenticateRequest(req, {
+        apiKey: this.apiKey,
+        devices: this.deviceTokens,
+      });
+      if (!auth.ok) {
         console.log("[ws] Client rejected: invalid token");
         ws.close(4001, "Unauthorized");
         return;
       }
 
-      console.log("[ws] Client connected");
+      console.log(
+        auth.via === "device"
+          ? `[ws] Client connected (device "${auth.device.name}", id ${auth.device.id})`
+          : `[ws] Client connected (${auth.via === "master" ? "master key" : "no auth configured"})`,
+      );
       this.handleConnection(ws);
     });
 
@@ -5879,7 +5893,29 @@ export class BridgeWebSocketServer {
         let historyLoaded = false;
         let sessionCreateMs = 0;
         getSessionHistory(claudeSessionId)
-          .then((pastMessages) => {
+          .then(async (pastMessages) => {
+            // A `claude --bg` daemon session or a terminal started with this
+            // session id would share the transcript with us: refuse and let
+            // the user fork instead (the SDK refuses background sessions
+            // anyway). Checked here, after the resume operation is
+            // registered, so concurrent resume requests still coalesce.
+            const holder =
+              msg.forkSession === true
+                ? null
+                : await findExternalSessionHolder(claudeSessionId);
+            if (holder) {
+              console.log(
+                `[ws] resume_session: ${claudeSessionId} is held by ${holder.description}; refusing`,
+              );
+              this.failResumeOperation(
+                resumeOperation.key,
+                resumeOperation.operationId,
+                `This Claude session is already open elsewhere (${holder.description}). ` +
+                  'Close it there, or enable "Fork session on resume" to continue in a copy.',
+                "session_held_externally",
+              );
+              return;
+            }
             historyLoadMs = Date.now() - historyStartedAt;
             historyLoaded = true;
             historyMetrics = summarizeResumeHistory(pastMessages);

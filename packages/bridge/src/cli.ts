@@ -24,6 +24,9 @@ Commands:
   version               Show the installed Bridge version
   doctor [--json]       Check the local Bridge environment
   setup [options]       Register Bridge as a macOS launchd or Linux systemd service
+  devices [action]      Per-device access tokens (fork): list | add <name> |
+                        revoke <id> | rotate <id> | remove <id>. Stored as hashes
+                        in ~/.ccpocket/devices.json; accepted alongside BRIDGE_API_KEY
 
 Options:
   -h, --help            Show this help
@@ -121,6 +124,73 @@ if (parsed.helpRequested) {
     );
     process.exit(1);
   }
+} else if (parsed.command === "devices") {
+  // Per-device access tokens: list | add <name> | revoke <id> | rotate <id> | remove <id>
+  import("./device-tokens.js")
+    .then(async ({ DeviceTokenStore }) => {
+      const store = new DeviceTokenStore();
+      const [, action, arg] = parsed.positionals;
+      const printIssued = async (issued: { device: { id: string; name: string }; token: string }) => {
+        console.log(`Device "${issued.device.name}" (id ${issued.device.id})`);
+        console.log(`Token (shown once): ${issued.token}`);
+        const wsUrl = parseFlag(parsed, "public-ws-url") ?? process.env.BRIDGE_PUBLIC_WS_URL;
+        if (wsUrl) {
+          const { buildConnectionUrl } = await import("./startup-info.js");
+          const deepLink = buildConnectionUrl(wsUrl, issued.token);
+          console.log(`Deep link: ${deepLink}`);
+          try {
+            const QRCode = (await import("qrcode")).default;
+            console.log(await QRCode.toString(deepLink, { type: "terminal", small: true }));
+          } catch {
+            // QR rendering is optional.
+          }
+        } else {
+          console.log("(set BRIDGE_PUBLIC_WS_URL or pass --public-ws-url to also print a deep link / QR)");
+        }
+      };
+      switch (action) {
+        case undefined:
+        case "list": {
+          const devices = store.list();
+          if (devices.length === 0) {
+            console.log(`No devices in ${store.filePath}. Add one: ccpocket-bridge devices add "<name>"`);
+            break;
+          }
+          for (const d of devices) {
+            const state = d.revokedAt ? `revoked ${d.revokedAt}` : "active";
+            console.log(`${d.id}  ${d.name.padEnd(20)}  ${state}  created ${d.createdAt}  last seen ${d.lastSeenAt ?? "never"}`);
+          }
+          break;
+        }
+        case "add":
+          if (!arg) throw new Error('usage: ccpocket-bridge devices add "<name>"');
+          await printIssued(store.add(arg));
+          break;
+        case "rotate": {
+          if (!arg) throw new Error("usage: ccpocket-bridge devices rotate <id>");
+          const issued = store.rotate(arg);
+          if (!issued) throw new Error(`No active device with id ${arg}`);
+          await printIssued(issued);
+          break;
+        }
+        case "revoke":
+          if (!arg) throw new Error("usage: ccpocket-bridge devices revoke <id>");
+          if (!store.revoke(arg)) throw new Error(`No active device with id ${arg}`);
+          console.log(`Device ${arg} revoked; its token no longer works.`);
+          break;
+        case "remove":
+          if (!arg) throw new Error("usage: ccpocket-bridge devices remove <id>");
+          if (!store.remove(arg)) throw new Error(`No device with id ${arg}`);
+          console.log(`Device ${arg} removed.`);
+          break;
+        default:
+          throw new Error(`Unknown devices action "${action}". Use list | add <name> | revoke <id> | rotate <id> | remove <id>.`);
+      }
+    })
+    .catch((err) => {
+      console.error("devices failed:", err instanceof Error ? err.message : err);
+      process.exit(1);
+    });
 } else {
   // Configure global fetch proxy before any network calls
   setupProxy();
