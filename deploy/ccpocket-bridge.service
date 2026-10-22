@@ -2,6 +2,8 @@
 Description=CC Pocket bridge (fork dmitry575/ccpocket) - Claude Code remote sessions
 After=network-online.target
 Wants=network-online.target
+# Keep retrying forever instead of giving up after 5 failures in 10 s.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -11,10 +13,23 @@ EnvironmentFile=/etc/ccpocket-bridge.env
 ExecStart=/usr/bin/node /root/ccpocket/packages/bridge/dist/index.js
 Restart=always
 RestartSec=5
-MemoryHigh=1800M
-MemoryMax=2200M
+# Each live Claude session is a `claude` process of ~300 MB; the server has 4 GB.
+MemoryHigh=1500M
+MemoryMax=2000M
+OOMPolicy=continue
+TasksMax=512
 KillMode=mixed
 TimeoutStopSec=30
+# Hardening that still lets the bridge spawn `claude` as root with HOME=/root.
+# ProtectSystem/ProtectHome are NOT used: the bridge must write under /root.
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

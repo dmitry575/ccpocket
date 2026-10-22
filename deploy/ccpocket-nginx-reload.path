@@ -2,7 +2,10 @@
 Description=Reload nginx when the IP certificate used by the CC Pocket bridge is renewed
 
 [Path]
+# acme.sh writes the chain and the key as two separate files; watch both so a
+# reload between the two writes is followed by another reload.
 PathChanged=/root/cert/ip/fullchain.pem
+PathChanged=/root/cert/ip/privkey.pem
 Unit=ccpocket-nginx-reload.service
 
 [Install]
