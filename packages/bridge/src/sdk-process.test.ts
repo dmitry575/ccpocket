@@ -2035,6 +2035,59 @@ describe("buildAskUserAnswers", () => {
   });
 });
 
+describe("SdkProcess pending permissions on interrupt/stop/result", () => {
+  function pendingProcess() {
+    const proc = new SdkProcess();
+    const resolve = vi.fn();
+    const messages: ServerMessage[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const internal = proc as any;
+    internal._status = "waiting_approval";
+    internal.pendingPermissions.set("tool-1", {
+      resolve,
+      toolName: "Bash",
+      input: { command: "rm -rf build" },
+    });
+    return { proc, internal, resolve, messages };
+  }
+
+  it("denies pending requests and notifies clients on interrupt", () => {
+    const { proc, internal, resolve, messages } = pendingProcess();
+    internal.queryInstance = { interrupt: vi.fn(async () => undefined) };
+
+    proc.interrupt();
+
+    expect(resolve).toHaveBeenCalledWith({
+      behavior: "deny",
+      message: "Interrupted by user",
+    });
+    expect(messages).toContainEqual({ type: "permission_resolved", toolUseId: "tool-1" });
+    expect(proc.getPendingPermissions()).toHaveLength(0);
+  });
+
+  it("denies pending requests on stop", () => {
+    const { proc, internal, resolve, messages } = pendingProcess();
+    internal.queryInstance = { close: vi.fn() };
+
+    proc.stop();
+
+    expect(resolve).toHaveBeenCalledWith({ behavior: "deny", message: "Session stopped" });
+    expect(messages).toContainEqual({ type: "permission_resolved", toolUseId: "tool-1" });
+  });
+
+  it("denies pending requests when the turn ends with a result", () => {
+    const { proc, internal, resolve, messages } = pendingProcess();
+
+    internal.updateStatusFromMessage({ type: "result", subtype: "success" });
+
+    expect(resolve).toHaveBeenCalledWith(
+      expect.objectContaining({ behavior: "deny" }),
+    );
+    expect(messages).toContainEqual({ type: "permission_resolved", toolUseId: "tool-1" });
+    expect(proc.status).toBe("idle");
+  });
+});
+
 describe("SdkProcess.answer", () => {
   it("resolves AskUserQuestion with question-keyed SDK answers", () => {
     const proc = new SdkProcess();

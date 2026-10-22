@@ -781,7 +781,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     this.authResolution = Promise.resolve();
     this.authResolutionPending = false;
     this.sessionEndEmitted = false;
-    this.pendingPermissions.clear();
+    this.settlePendingPermissions("Session restarted");
     this.permissionModeGeneration += 1;
     this.permissionModeUpdates = Promise.resolve();
     this._permissionMode = resolvePermissionMode(
@@ -928,7 +928,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
       this.queryInstance.close();
       this.queryInstance = null;
     }
-    this.pendingPermissions.clear();
+    this.settlePendingPermissions("Session stopped");
     this.userMessageResolve = null;
     this.toolCallsSinceLastResult = 0;
     this.fileEditsSinceLastResult = 0;
@@ -950,7 +950,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
       this.queryInstance.interrupt().catch((err) => {
         console.error("[sdk-process] Interrupt error:", err);
       });
-      this.pendingPermissions.clear();
+      this.settlePendingPermissions("Interrupted by user");
     }
   }
 
@@ -1624,6 +1624,27 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     });
   }
 
+  /**
+   * Deny every pending permission request and tell clients it is resolved.
+   * Used when the turn ends without an answer (interrupt, stop, result):
+   * a bare `pendingPermissions.clear()` left the SDK's canUseTool promise
+   * hanging and the client's approval card stuck open.
+   */
+  private settlePendingPermissions(reason: string): void {
+    if (this.pendingPermissions.size === 0) return;
+    const entries = [...this.pendingPermissions];
+    this.pendingPermissions.clear();
+    for (const [toolUseId, pending] of entries) {
+      pending.resolve({ behavior: "deny", message: reason });
+      const event: ServerMessage = { type: "permission_resolved", toolUseId };
+      if (pending.announcingRequest) {
+        pending.resolutionEventsPending = [event];
+      } else {
+        this.emitMessage(event);
+      }
+    }
+  }
+
   private resolvePendingPermission(
     toolUseId: string,
     pending: PendingPermission,
@@ -1677,7 +1698,9 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
         }
         break;
       case "result":
-        this.pendingPermissions.clear();
+        // The turn is over; any request still unanswered can no longer be
+        // acted on by the CLI.
+        this.settlePendingPermissions("Turn ended before the request was answered");
         this.setStatus("idle");
         this.deliverQueuedInputIfWaiting();
         break;
