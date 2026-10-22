@@ -44,6 +44,9 @@ function projectNameFromPath(projectPath: string): string {
 }
 
 export class GalleryStore {
+  /** Upper bound for a POST /api/gallery/upload JSON body (base64 image + metadata). */
+  static readonly MAX_UPLOAD_BODY_BYTES = 64 * 1024 * 1024;
+
   private index: GalleryImageMeta[] = [];
 
   private async resolveReadablePath(filePath: string, projectPath: string): Promise<string | null> {
@@ -336,9 +339,27 @@ export class GalleryStore {
     const url = req.url ?? "";
     if (url !== "/api/gallery/upload" || req.method !== "POST") return false;
 
-    let body = "";
-    req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+    // Bound the JSON body: a base64 image of MAX_UPLOAD_BODY_BYTES is already
+    // far larger than any gallery image; without a cap a client could grow
+    // the `body` string without limit.
+    const chunks: Buffer[] = [];
+    let received = 0;
+    let rejected = false;
+    req.on("data", (chunk: Buffer) => {
+      if (rejected) return;
+      received += chunk.length;
+      if (received > GalleryStore.MAX_UPLOAD_BODY_BYTES) {
+        rejected = true;
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Upload body too large" }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", async () => {
+      if (rejected) return;
+      const body = Buffer.concat(chunks).toString("utf8");
       try {
         const parsed = JSON.parse(body) as {
           filePath?: string;

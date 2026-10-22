@@ -9,6 +9,7 @@ import { lstat, readFile, readlink, realpath, stat, unlink } from "node:fs/promi
 import { resolve, extname, basename, relative, posix, win32 } from "node:path";
 import { promisify } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
+import { isRequestAuthorized } from "./auth.js";
 import { textPreview } from "./text-preview.js";
 import { consumeFinderProof, verifyFinderSocketProof, revealInFinder } from "./finder-reveal.js";
 import {
@@ -996,6 +997,11 @@ export class BridgeWebSocketServer {
 
     this.wss = new WebSocketServer({
       server,
+      // Largest legitimate frame is a base64 image attachment (MAX_IMAGE_SIZE,
+      // 5 MB by default, overridable via env) plus JSON overhead. The ws
+      // default of 100 MiB lets an unauthenticated peer force 100 MiB string
+      // + JSON.parse allocations per frame.
+      maxPayload: Math.max(16 * 1024 * 1024, BridgeWebSocketServer.MAX_IMAGE_SIZE * 2),
       perMessageDeflate: {
         serverNoContextTakeover: true,
         clientNoContextTakeover: true,
@@ -1025,15 +1031,13 @@ export class BridgeWebSocketServer {
     );
 
     this.wss.on("connection", (ws, req) => {
-      // API key authentication
-      if (this.apiKey) {
-        const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
-        const token = url.searchParams.get("token");
-        if (token !== this.apiKey) {
-          console.log("[ws] Client rejected: invalid token");
-          ws.close(4001, "Unauthorized");
-          return;
-        }
+      // API key authentication: constant-time comparison, token from the
+      // Authorization header or the ?token= query parameter. The URL is parsed
+      // against a constant base so a hostile Host header cannot throw here.
+      if (!isRequestAuthorized(req, this.apiKey)) {
+        console.log("[ws] Client rejected: invalid token");
+        ws.close(4001, "Unauthorized");
+        return;
       }
 
       console.log("[ws] Client connected");

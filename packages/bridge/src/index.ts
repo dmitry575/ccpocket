@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setupProxy } from "./proxy.js";
+import { isLoopbackHost, isRequestAuthorized, parseRequestUrl } from "./auth.js";
 import { BridgeWebSocketServer } from "./websocket.js";
 import { ImageStore } from "./image-store.js";
 import { MediaStore } from "./media-store.js";
@@ -53,8 +54,29 @@ export async function startServer() {
 
   console.log("[bridge] Starting ccpocket bridge server...");
 
+  // A crash inside one request or SDK callback must not take every live
+  // Claude session down with it. Log and keep serving; systemd restarts the
+  // process only if it really dies.
+  process.on("unhandledRejection", (reason) => {
+    console.error("[bridge] Unhandled promise rejection:", reason);
+  });
+  process.on("uncaughtException", (err) => {
+    console.error("[bridge] Uncaught exception:", err);
+  });
+
   if (API_KEY) {
     console.log("[bridge] API key authentication enabled");
+  } else if (!isLoopbackHost(HOST) && process.env.BRIDGE_ALLOW_NO_AUTH !== "1") {
+    // Without a key every client that can reach the port gets a shell on this
+    // machine through Claude. Refuse to listen on a non-loopback address.
+    console.error(
+      `[bridge] Refusing to start: BRIDGE_API_KEY is not set while BRIDGE_HOST=${HOST} is reachable from other machines.\n` +
+        "[bridge] Set BRIDGE_API_KEY (or BRIDGE_HOST=127.0.0.1 behind a reverse proxy). " +
+        "To run without authentication anyway, set BRIDGE_ALLOW_NO_AUTH=1.",
+    );
+    process.exit(1);
+  } else {
+    console.warn("[bridge] WARNING: API key authentication is disabled");
   }
 
   if (!MDNS_ENABLED) {
@@ -179,7 +201,7 @@ export async function startServer() {
       "Access-Control-Allow-Methods",
       "GET, HEAD, POST, PUT, DELETE, OPTIONS",
     );
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Content-Length, Range");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Content-Length, Range");
     res.setHeader(
       "Access-Control-Expose-Headers",
       "Accept-Ranges, Content-Length, Content-Range, X-File-SHA256, X-Received-Bytes",
@@ -191,13 +213,34 @@ export async function startServer() {
       return;
     }
 
-    // Health check endpoint
-    if (req.url === "/health" && req.method === "GET") {
+    const requestUrl = parseRequestUrl(req);
+    if (!requestUrl) {
+      res.writeHead(400, { "Content-Type": "text/plain" });
+      res.end("Bad Request");
+      return;
+    }
+    const pathname = requestUrl.pathname;
+    const authorized = isRequestAuthorized(req, API_KEY);
+    const unauthorized = () => {
+      res.writeHead(401, {
+        "Content-Type": "application/json",
+        "WWW-Authenticate": 'Bearer realm="ccpocket-bridge"',
+      });
+      res.end(JSON.stringify({ error: "Unauthorized" }));
+    };
+
+    // Health check endpoint: reachable without the key so clients can probe
+    // the bridge, but session/client counters are only revealed to holders of it.
+    if (pathname === "/health" && req.method === "GET") {
       const body = JSON.stringify({
         status: "ok",
         uptime: Math.floor((Date.now() - startedAt) / 1000),
-        sessions: wsServer?.sessionCount ?? 0,
-        clients: wsServer?.clientCount ?? 0,
+        ...(authorized
+          ? {
+              sessions: wsServer?.sessionCount ?? 0,
+              clients: wsServer?.clientCount ?? 0,
+            }
+          : {}),
       });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(body);
@@ -205,15 +248,30 @@ export async function startServer() {
     }
 
     // Version info endpoint
-    if (req.url === "/version" && req.method === "GET") {
+    if (pathname === "/version" && req.method === "GET") {
       const body = JSON.stringify(getVersionInfo(startedAt));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(body);
       return;
     }
 
+    // Everything below either spends the owner's provider quota, runs
+    // commands, or reads/writes files: the API key is mandatory.
+    const needsKey =
+      pathname === "/usage" ||
+      pathname === "/doctor" ||
+      // Gallery: list, upload and delete need the key. GET /api/gallery/:id
+      // stays capability-based (unguessable UUID) so <img> loads keep working.
+      pathname === "/api/gallery" ||
+      pathname === "/api/gallery/upload" ||
+      (pathname.startsWith("/api/gallery/") && req.method !== "GET");
+    if (needsKey && !authorized) {
+      unauthorized();
+      return;
+    }
+
     // Usage endpoint
-    if (req.url === "/usage" && req.method === "GET") {
+    if (pathname === "/usage" && req.method === "GET") {
       fetchAllUsage()
         .then((providers) => {
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -227,7 +285,7 @@ export async function startServer() {
     }
 
     // Doctor endpoint
-    if (req.url === "/doctor" && req.method === "GET") {
+    if (pathname === "/doctor" && req.method === "GET") {
       runDoctor()
         .then((report) => {
           res.writeHead(200, { "Content-Type": "application/json" });

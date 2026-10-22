@@ -627,6 +627,17 @@ class BridgeService implements BridgeServiceBase {
     }
   }
 
+  /// Authorization header for Bridge HTTP endpoints that require the API key
+  /// (gallery upload/delete, usage, doctor). The key is the `token` query
+  /// parameter of the WebSocket URL used for the current connection.
+  Map<String, String> get _bridgeAuthHeaders {
+    final url = _lastUrl;
+    if (url == null) return const {};
+    final token = Uri.tryParse(url)?.queryParameters['token'];
+    if (token == null || token.isEmpty) return const {};
+    return {'Authorization': 'Bearer $token'};
+  }
+
   /// Derive HTTP base URL from the WebSocket URL.
   /// Example: ws://host:8765/path?query=1 -> http://host:8765
   @override
@@ -4591,7 +4602,10 @@ class BridgeService implements BridgeServiceBase {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/gallery/upload'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              ..._bridgeAuthHeaders,
+            },
             body: jsonEncode({
               'base64': base64Data,
               'mimeType': mimeType,
@@ -4622,7 +4636,10 @@ class BridgeService implements BridgeServiceBase {
 
     try {
       final response = await http
-          .delete(Uri.parse('$baseUrl/api/gallery/$id'))
+          .delete(
+            Uri.parse('$baseUrl/api/gallery/$id'),
+            headers: _bridgeAuthHeaders,
+          )
           .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
