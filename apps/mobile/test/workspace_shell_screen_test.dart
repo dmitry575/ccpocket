@@ -2148,7 +2148,7 @@ void main() {
     // Programmatic resize clamps to the minimum and to what the center pane leaves free.
     shellKey.currentState!.resizeLeftPane(50, 1400);
     await _pumpUi(tester);
-    expect(tester.getSize(list).width, 220);
+    expect(tester.getSize(list).width, 260);
     shellKey.currentState!.resizeLeftPane(5000, 1400);
     await _pumpUi(tester);
     expect(tester.getSize(list).width, 1400 - 360 - 1);

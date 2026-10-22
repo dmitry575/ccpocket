@@ -38,7 +38,9 @@ const _paneResizePointerHandleWidth = 12.0;
 const _paneResizeTouchHandleWidth = 44.0;
 const _minCenterPaneWidth = 360.0;
 const _minRightPaneWidth = 240.0;
-const _minLeftPaneWidth = 220.0;
+// Session cards are laid out for upstream's narrowest default (260); below
+// that their rows overflow.
+const _minLeftPaneWidth = 260.0;
 /// SharedPreferences key for the user-chosen width of the session list pane.
 const _leftPaneWidthPrefKey = 'workspace_left_pane_width';
 
