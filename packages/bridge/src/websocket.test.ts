@@ -200,6 +200,7 @@ vi.mock("./session.js", () => ({
         installToolSuggestion: vi.fn(async () => {}),
         interrupt: vi.fn(),
         getPendingPermission: vi.fn(() => undefined),
+        getPendingPermissions: vi.fn(() => []),
       };
       this.sessions.set(id, {
         id,
@@ -453,6 +454,7 @@ vi.mock("./session.js", () => ({
         installToolSuggestion: vi.fn(async () => {}),
         interrupt: vi.fn(),
         getPendingPermission: vi.fn(() => undefined),
+        getPendingPermissions: vi.fn(() => []),
       };
       this.sessions.set(newId, {
         id: newId,
@@ -8169,6 +8171,32 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
     expect(session.process.installToolSuggestion).toHaveBeenCalledWith(
       "approval-0",
+    );
+    bridge.close();
+  });
+
+  it("routes a tool action without sessionId by its pending request id, never by recency", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const manager = (bridge as any).sessionManager;
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const olderId = manager.create("/tmp/project-a");
+    const newerId = manager.create("/tmp/project-b");
+    const older = manager.get(olderId);
+    const newer = manager.get(newerId);
+    (older.process.getPendingPermissions as ReturnType<typeof vi.fn>).mockReturnValue([
+      { toolUseId: "tool-older", toolName: "Bash", input: {} },
+    ]);
+
+    await (bridge as any).handleClientMessage({ type: "approve", id: "tool-older" }, ws);
+    expect(older.process.approve).toHaveBeenCalledWith("tool-older");
+    expect(newer.process.approve).not.toHaveBeenCalled();
+
+    await (bridge as any).handleClientMessage({ type: "reject", id: "tool-unknown" }, ws);
+    expect(older.process.reject).not.toHaveBeenCalled();
+    expect(newer.process.reject).not.toHaveBeenCalled();
+    const sends = ws.send.mock.calls.map((c: unknown[]) => JSON.parse(c[0] as string));
+    expect(sends).toContainEqual(
+      expect.objectContaining({ type: "error", message: "No active session." }),
     );
     bridge.close();
   });

@@ -4695,7 +4695,7 @@ export class BridgeWebSocketServer {
       }
 
       case "approve": {
-        const session = this.resolveSession(msg.sessionId);
+        const session = this.resolveToolActionSession(msg.sessionId, msg.id);
         if (!session) {
           this.sendToolActionError(ws, msg, "No active session.");
           return;
@@ -4784,7 +4784,7 @@ export class BridgeWebSocketServer {
       }
 
       case "approve_always": {
-        const session = this.resolveSession(msg.sessionId);
+        const session = this.resolveToolActionSession(msg.sessionId, msg.id);
         if (!session) {
           this.sendToolActionError(ws, msg, "No active session.");
           return;
@@ -4814,7 +4814,7 @@ export class BridgeWebSocketServer {
       }
 
       case "reject": {
-        const session = this.resolveSession(msg.sessionId);
+        const session = this.resolveToolActionSession(msg.sessionId, msg.id);
         if (!session) {
           this.sendToolActionError(ws, msg, "No active session.");
           return;
@@ -4848,7 +4848,7 @@ export class BridgeWebSocketServer {
       }
 
       case "answer": {
-        const session = this.resolveSession(msg.sessionId);
+        const session = this.resolveToolActionSession(msg.sessionId, msg.toolUseId);
         if (!session) {
           this.sendToolActionError(ws, msg, "No active session.");
           return;
@@ -8460,6 +8460,30 @@ export class BridgeWebSocketServer {
   ): SessionInfo | undefined {
     if (sessionId) return this.sessionManager.get(sessionId);
     return this.getFirstSession();
+  }
+
+  /**
+   * Session for a tool action (approve / approve_always / reject / answer).
+   * With a sessionId the lookup is exact. Without one the session is found by
+   * the pending request id across all sessions; there is no "most recent
+   * session" guess, which could approve an unrelated request that arrived in
+   * another session between the card being shown and the tap.
+   */
+  private resolveToolActionSession(
+    sessionId: string | undefined,
+    toolUseId: string | undefined,
+  ): SessionInfo | undefined {
+    if (sessionId) return this.sessionManager.get(sessionId);
+    if (!toolUseId) return undefined;
+    for (const summary of this.sessionManager.list()) {
+      const session = this.sessionManager.get(summary.id);
+      if (!session) continue;
+      const pending = session.process.getPendingPermissions();
+      if (pending.some((request) => request.toolUseId === toolUseId)) {
+        return session;
+      }
+    }
+    return undefined;
   }
 
   private getFirstSession() {
