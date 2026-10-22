@@ -469,6 +469,13 @@ function parseFromChunks(
       continue;
     }
 
+    // The entrypoint also appears on "attachment" records, so look before
+    // the user/assistant filter below.
+    if (!entrypoint) {
+      const epMatch = line.match(RE_ENTRYPOINT);
+      if (epMatch) entrypoint = epMatch[1];
+    }
+
     const isUser = RE_TYPE_USER.test(line);
     const isAssistant = !isUser && RE_TYPE_ASSISTANT.test(line);
     if (!isUser && !isAssistant) continue;
@@ -499,11 +506,6 @@ function parseFromChunks(
 
     if (!isSidechain && RE_IS_SIDECHAIN.test(line)) {
       isSidechain = true;
-    }
-
-    if (!entrypoint) {
-      const epMatch = line.match(RE_ENTRYPOINT);
-      if (epMatch) entrypoint = epMatch[1];
     }
 
     if (isUser && !permissionMode) {
@@ -634,6 +636,14 @@ function parseFromChunks(
       headFoundProjectPath,
       headFoundGitBranch,
     };
+  }
+
+  // A large first record (file-history snapshot) can push every message
+  // past the head chunk; the tail still carries the entrypoint on its
+  // user/attachment records.
+  if (!entrypoint && tail) {
+    const epMatch = tail.match(RE_ENTRYPOINT);
+    if (epMatch) entrypoint = epMatch[1];
   }
 
   return {
