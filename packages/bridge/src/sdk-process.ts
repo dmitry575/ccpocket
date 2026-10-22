@@ -438,6 +438,23 @@ const CLAUDE_ASSISTANT_ERRORS = {
     message: "Claude reached the maximum response length before finishing.",
     errorCode: "claude_max_output_tokens",
   },
+  // Added in @anthropic-ai/claude-agent-sdk 0.3.3xx.
+  account_on_hold: {
+    message: "The Claude account is on hold. Check billing or account status on claude.ai.",
+    errorCode: "claude_account_on_hold",
+  },
+  verification_required: {
+    message: "Claude requires account verification before continuing. Open claude.ai to complete it.",
+    errorCode: "claude_verification_required",
+  },
+  overloaded: {
+    message: "Claude is temporarily overloaded. Try again in a moment.",
+    errorCode: "claude_overloaded",
+  },
+  cloud_credential_error: {
+    message: "Claude could not use the configured cloud provider credentials (Bedrock/Vertex/Foundry).",
+    errorCode: "claude_cloud_credential_error",
+  },
 } satisfies Record<SDKAssistantMessageError, ClaudeAssistantErrorDetails>;
 
 function claudeAssistantErrorMessage(error: unknown): ServerMessage | null {
