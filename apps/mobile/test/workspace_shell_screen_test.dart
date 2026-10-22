@@ -30,6 +30,7 @@ import 'package:ccpocket/theme/app_theme.dart';
 import 'package:ccpocket/widgets/session_card.dart';
 import 'package:ccpocket/widgets/chat_input_bar.dart';
 import 'package:ccpocket/features/git/git_screen.dart';
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -2134,13 +2135,15 @@ void main() {
     expect(tester.getSize(list).width, 360);
     expect(find.byKey(const ValueKey('workspace_left_resize_handle')), findsOneWidget);
 
-    // Drag the handle to the right: the list grows by the same amount.
+    // Drag the handle to the right with a mouse (no touch slop): the list
+    // grows by the dragged distance.
     await tester.drag(
       find.byKey(const ValueKey('workspace_left_resize_handle')),
       const Offset(120, 0),
+      kind: PointerDeviceKind.mouse,
     );
     await _pumpUi(tester);
-    expect(tester.getSize(list).width, 480);
+    expect(tester.getSize(list).width, closeTo(480, 2));
 
     // Programmatic resize clamps to the minimum and to what the center pane leaves free.
     shellKey.currentState!.resizeLeftPane(50, 1400);
