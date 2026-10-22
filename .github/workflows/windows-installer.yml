@@ -1,0 +1,176 @@
+name: Windows Installer (fork)
+
+# Fork-only workflow: builds the Windows desktop app and packages it as an
+# Inno Setup installer (plus the portable zip). Does not touch the upstream
+# windows-release.yml so that upstream can still be merged cleanly.
+on:
+  push:
+    tags:
+      - 'windows-setup/v*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    # Pin to VS 2022 for the same reason as upstream windows-release.yml.
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read Flutter version from .mise.toml
+        id: mise
+        shell: pwsh
+        run: |
+          $mise = Get-Content .mise.toml -Raw
+          if ($mise -notmatch 'flutter\s*=\s*"([^"]+)"') {
+            Write-Error "Could not read Flutter version from .mise.toml"
+            exit 1
+          }
+          "flutter_version=$($Matches[1])" >> $env:GITHUB_OUTPUT
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ steps.mise.outputs.flutter_version }}
+          cache: false
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - run: flutter pub get
+        working-directory: apps/mobile
+
+      - name: Build Windows app
+        run: flutter build windows --release
+        working-directory: apps/mobile
+
+      - name: Smoke launch Windows app
+        shell: pwsh
+        run: |
+          $exe = "apps/mobile/build/windows/x64/runner/Release/ccpocket.exe"
+          if (!(Test-Path $exe)) {
+            Write-Error "Windows app executable not found at $exe"
+            exit 1
+          }
+          $process = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 20
+          if (!$process.HasExited) {
+            Stop-Process -Id $process.Id -Force
+            Write-Host "Windows app stayed alive for the smoke window."
+            exit 0
+          }
+          Write-Error "Windows app exited before the smoke timeout with status $($process.ExitCode)"
+          exit 1
+
+      - name: Extract version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like "refs/tags/windows-setup/v*") {
+            $version = $env:GITHUB_REF_NAME -replace '^windows-setup/v', ''
+          } else {
+            $version = (Select-String -Path apps/mobile/pubspec.yaml -Pattern '^version:\s*(.+)$').Matches[0].Groups[1].Value.Trim()
+          }
+          if ($version -notlike "*+*") {
+            Write-Error "Version must include a build number, e.g. windows-setup/v1.145.4+276"
+            exit 1
+          }
+          $semver = ($version -split '\+')[0]
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "semver=$semver" >> $env:GITHUB_OUTPUT
+
+      - name: Download Visual C++ redistributable
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "vc_redist.x64.exe"
+          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $dest
+          if ((Get-Item $dest).Length -lt 1MB) { Write-Error "vc_redist download looks truncated"; exit 1 }
+          "VCREDIST_PATH=$dest" >> $env:GITHUB_ENV
+
+      - name: Locate Inno Setup
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Host "Inno Setup not preinstalled, installing via Chocolatey..."
+            choco install innosetup --no-progress -y
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { Write-Error "ISCC.exe not found"; exit 1 }
+          "ISCC_PATH=$iscc" >> $env:GITHUB_ENV
+
+      - name: Build installer
+        id: installer
+        shell: pwsh
+        run: |
+          $semver = "${{ steps.version.outputs.semver }}"
+          $sourceDir = (Resolve-Path "apps/mobile/build/windows/x64/runner/Release").Path
+          $outDir = Join-Path $env:RUNNER_TEMP "windows-installer"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          & "$env:ISCC_PATH" "/DAppVersion=$semver" "/DSourceDir=$sourceDir" "/DOutputDir=$outDir" "/DVCRedist=$env:VCREDIST_PATH" "apps/mobile/windows/installer/ccpocket.iss"
+          if ($LASTEXITCODE -ne 0) { Write-Error "ISCC failed with $LASTEXITCODE"; exit 1 }
+          $setup = Get-ChildItem $outDir -Filter "*.exe" | Select-Object -First 1
+          if (-not $setup) { Write-Error "Installer not produced"; exit 1 }
+          Write-Host "Installer: $($setup.FullName) ($([math]::Round($setup.Length / 1MB, 1)) MB)"
+          "setup_path=$($setup.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Smoke test installer (silent install + uninstall)
+        shell: pwsh
+        run: |
+          $setup = "${{ steps.installer.outputs.setup_path }}"
+          $target = Join-Path $env:RUNNER_TEMP "ccpocket-smoke-install"
+          $p = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /DIR=`"$target`"" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { Write-Error "Silent install failed with $($p.ExitCode)"; exit 1 }
+          if (!(Test-Path (Join-Path $target "ccpocket.exe"))) { Write-Error "ccpocket.exe missing after install"; exit 1 }
+          $unins = Get-ChildItem $target -Filter "unins*.exe" | Select-Object -First 1
+          if (-not $unins) { Write-Error "Uninstaller missing"; exit 1 }
+          $u = Start-Process -FilePath $unins.FullName -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -PassThru -Wait
+          if ($u.ExitCode -ne 0) { Write-Error "Silent uninstall failed with $($u.ExitCode)"; exit 1 }
+          Write-Host "Silent install and uninstall succeeded."
+
+      - name: Package portable zip
+        id: package
+        shell: pwsh
+        run: |
+          $semver = "${{ steps.version.outputs.semver }}"
+          $archiveName = "CC-Pocket-windows-x64-v$semver.zip"
+          $bundleDir = Join-Path $env:RUNNER_TEMP "windows-dist\CC-Pocket-windows-x64"
+          New-Item -ItemType Directory -Force -Path $bundleDir | Out-Null
+          Copy-Item -Path "apps/mobile/build/windows/x64/runner/Release/*" -Destination $bundleDir -Recurse -Force
+          Compress-Archive -Path $bundleDir -DestinationPath $archiveName -Force
+          "archive_path=$((Resolve-Path $archiveName).Path)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-${{ steps.version.outputs.semver }}
+          path: |
+            ${{ steps.installer.outputs.setup_path }}
+            ${{ steps.package.outputs.archive_path }}
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > /tmp/notes.md <<'EOF'
+          Windows desktop build of CC Pocket from the fork dmitry575/ccpocket.
+
+          - `CC-Pocket-Setup-x64-v*.exe` — installer (Inno Setup): Start menu and optional desktop shortcut, per-user install by default, clean uninstall. Installs the Microsoft Visual C++ runtime if it is missing. Not code-signed, so SmartScreen will ask once ("More info" → "Run anyway").
+          - `CC-Pocket-windows-x64-v*.zip` — portable build, unzip and run `ccpocket.exe`.
+          EOF
+          TITLE="Windows installer ${{ steps.version.outputs.version }}"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "$TITLE" --notes-file /tmp/notes.md
+            gh release upload "$GITHUB_REF_NAME" "${{ steps.installer.outputs.setup_path }}" "${{ steps.package.outputs.archive_path }}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${{ steps.installer.outputs.setup_path }}" "${{ steps.package.outputs.archive_path }}" --title "$TITLE" --notes-file /tmp/notes.md
+          fi
