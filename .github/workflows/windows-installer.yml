@@ -8,6 +8,9 @@ on:
     tags:
       - 'windows-setup/v*'
   workflow_dispatch: {}
+  # Called by all-platforms-release.yml (tag release/v*): builds and uploads
+  # the artifact only; the caller creates the combined release.
+  workflow_call: {}
 
 permissions:
   contents: write
@@ -69,6 +72,8 @@ jobs:
         run: |
           if ($env:GITHUB_REF -like "refs/tags/windows-setup/v*") {
             $version = $env:GITHUB_REF_NAME -replace '^windows-setup/v', ''
+          } elseif ($env:GITHUB_REF -like "refs/tags/release/v*") {
+            $version = $env:GITHUB_REF_NAME -replace '^release/v', ''
           } else {
             $version = (Select-String -Path apps/mobile/pubspec.yaml -Pattern '^version:\s*(.+)$').Matches[0].Groups[1].Value.Trim()
           }
@@ -149,14 +154,14 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-installer-${{ steps.version.outputs.semver }}
+          name: windows-installer
           path: |
             ${{ steps.installer.outputs.setup_path }}
             ${{ steps.package.outputs.archive_path }}
           retention-days: 14
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/windows-setup/')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

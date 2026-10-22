@@ -1,0 +1,281 @@
+name: All Platforms Release (fork)
+
+# Fork-only workflow: one tag (release/v<semver>+<build>) produces one GitHub
+# Release with every platform that can be built without Apple/Google store
+# credentials:
+#   - Windows: Inno Setup installer + portable zip (via windows-installer.yml)
+#   - Linux:   tar.gz bundle (x64)
+#   - macOS:   .dmg, ad-hoc signed (no Developer ID, no notarization:
+#              Gatekeeper asks once; "Open anyway" or
+#              `xattr -d com.apple.quarantine "/Applications/CC Pocket.app"`)
+#   - Android: .apk signed with the fork keystore (secrets FORK_KEYSTORE_*),
+#              or with the debug keystore when those secrets are absent
+#   - iOS:     not produced — an installable IPA needs an Apple Developer
+#              account (signing certificate + provisioning profile)
+# Upstream per-platform workflows are left untouched.
+on:
+  push:
+    tags:
+      - 'release/v*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    uses: ./.github/workflows/windows-installer.yml
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read Flutter version from .mise.toml
+        id: mise
+        run: echo "flutter_version=$(grep 'flutter' .mise.toml | sed 's/.*= *\"//' | sed 's/\"//')" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ steps.mise.outputs.flutter_version }}
+          cache: true
+      - name: Install Linux desktop build dependencies
+        run: |
+          sudo timeout 10m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 update
+          sudo env DEBIAN_FRONTEND=noninteractive timeout 10m \
+            apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 install -y \
+            clang cmake ninja-build pkg-config libgtk-3-dev libsecret-1-dev \
+            libmpv-dev libsqlite3-0 libsqlite3-dev xvfb
+      - name: Disable precompiled Rust artifacts for Linux CI
+        run: printf '%s\n' 'use_precompiled_binaries: false' > apps/mobile/cargokit_options.yaml
+      - run: flutter pub get
+        working-directory: apps/mobile
+      - name: Build Linux app
+        run: flutter build linux --release
+        working-directory: apps/mobile
+      - name: Smoke launch Linux app
+        run: |
+          set +e
+          xvfb-run -a timeout 20s apps/mobile/build/linux/x64/release/bundle/ccpocket
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -eq 124 ]; then
+            echo "Linux app stayed alive for the smoke window."
+            exit 0
+          fi
+          echo "::error::Linux app exited before the smoke timeout with status $STATUS"
+          exit 1
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/release/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#release/v}"
+          else
+            VERSION="$(awk '/^version:/ {print $2; exit}' apps/mobile/pubspec.yaml)"
+          fi
+          echo "semver=${VERSION%%+*}" >> "$GITHUB_OUTPUT"
+      - name: Package Linux bundle
+        run: |
+          SEMVER="${{ steps.version.outputs.semver }}"
+          DIST_DIR="$RUNNER_TEMP/linux-dist"
+          mkdir -p "$DIST_DIR" dist
+          cp -a apps/mobile/build/linux/x64/release/bundle "$DIST_DIR/CC-Pocket-linux-x64"
+          tar -czf "dist/CC-Pocket-linux-x64-v${SEMVER}.tar.gz" -C "$DIST_DIR" "CC-Pocket-linux-x64"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundle
+          path: dist/*.tar.gz
+          retention-days: 14
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read Flutter version from .mise.toml
+        id: mise
+        run: echo "flutter_version=$(grep 'flutter' .mise.toml | sed 's/.*= *\"//' | sed 's/\"//')" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ steps.mise.outputs.flutter_version }}
+          cache: true
+      - run: flutter pub get
+        working-directory: apps/mobile
+      - name: Switch the Xcode project to ad-hoc signing
+        # Upstream signs with a Developer ID certificate the fork does not have.
+        # Ad-hoc signing ("-") still produces a runnable, sandboxed bundle.
+        # The Sparkle feed is cleared so the fork build never "updates" itself
+        # to the upstream-signed app.
+        working-directory: apps/mobile/macos
+        run: |
+          sed -i '' \
+            -e 's/CODE_SIGN_IDENTITY = "Apple Development";/CODE_SIGN_IDENTITY = "-";/g' \
+            -e 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' \
+            -e 's/DEVELOPMENT_TEAM = [A-Z0-9]*;/DEVELOPMENT_TEAM = "";/g' \
+            Runner.xcodeproj/project.pbxproj
+          sed -i '' -e 's|^SPARKLE_FEED_URL = .*$|SPARKLE_FEED_URL =|' Runner/Configs/AppInfo.xcconfig
+          grep -c 'CODE_SIGN_IDENTITY = "-"' Runner.xcodeproj/project.pbxproj
+      - name: Build macOS app
+        run: flutter build macos --release
+        working-directory: apps/mobile
+      - name: Locate and ad-hoc re-sign app bundle
+        id: app
+        run: |
+          APP_PATH="$(find apps/mobile/build/macos/Build/Products/Release -maxdepth 1 -name '*.app' | head -1)"
+          test -n "$APP_PATH"
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict "$APP_PATH"
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+      - name: Smoke launch macOS app
+        # Advisory only: headless runners sometimes refuse to open GUI apps.
+        continue-on-error: true
+        run: |
+          APP_PATH="${{ steps.app.outputs.app_path }}"
+          open -a "$APP_PATH" --args --smoke
+          sleep 20
+          if pgrep -f "$APP_PATH/Contents/MacOS" >/dev/null; then
+            pkill -f "$APP_PATH/Contents/MacOS" || true
+            echo "macOS app stayed alive for the smoke window."
+          else
+            echo "::error::macOS app exited before the smoke timeout"
+            exit 1
+          fi
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/release/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#release/v}"
+          else
+            VERSION="$(awk '/^version:/ {print $2; exit}' apps/mobile/pubspec.yaml)"
+          fi
+          echo "semver=${VERSION%%+*}" >> "$GITHUB_OUTPUT"
+      - name: Install create-dmg
+        run: brew install create-dmg
+      - name: Create DMG
+        run: |
+          APP_PATH="${{ steps.app.outputs.app_path }}"
+          APP_NAME="$(basename "$APP_PATH")"
+          mkdir -p dist
+          create-dmg \
+            --volname "CC Pocket" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "$APP_NAME" 150 185 \
+            --app-drop-link 450 185 \
+            --no-internet-enable \
+            "dist/CC-Pocket-macos-v${{ steps.version.outputs.semver }}.dmg" \
+            "$APP_PATH"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/*.dmg
+          retention-days: 14
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Read Flutter version from .mise.toml
+        id: mise
+        run: echo "flutter_version=$(grep 'flutter' .mise.toml | sed 's/.*= *\"//' | sed 's/\"//')" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ steps.mise.outputs.flutter_version }}
+          cache: true
+      - name: Install Android NDK
+        run: |
+          SDKMANAGER="${ANDROID_HOME:?}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null
+          "$SDKMANAGER" "ndk;29.0.13846066"
+      - name: Setup fork Android signing (optional)
+        id: signing
+        env:
+          FORK_KEYSTORE_BASE64: ${{ secrets.FORK_KEYSTORE_BASE64 }}
+          FORK_KEYSTORE_PASSWORD: ${{ secrets.FORK_KEYSTORE_PASSWORD }}
+          FORK_KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
+          FORK_KEY_PASSWORD: ${{ secrets.FORK_KEY_PASSWORD }}
+        run: |
+          if [ -z "$FORK_KEYSTORE_BASE64" ]; then
+            echo "::warning::FORK_KEYSTORE_* secrets are not set; the APK will be signed with the debug keystore (installs, but upgrades require uninstalling first). Run deploy/set-android-secrets.sh to fix."
+            echo "mode=debug" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$FORK_KEYSTORE_BASE64" | base64 -d > apps/mobile/android/keystore.jks
+          cat > apps/mobile/android/keystore.properties <<EOF
+          storeFile=${GITHUB_WORKSPACE}/apps/mobile/android/keystore.jks
+          storePassword=${FORK_KEYSTORE_PASSWORD}
+          keyAlias=${FORK_KEY_ALIAS}
+          keyPassword=${FORK_KEY_PASSWORD}
+          EOF
+          echo "mode=release" >> "$GITHUB_OUTPUT"
+      - name: Use precompiled Rust artifacts
+        run: printf '%s\n' 'use_precompiled_binaries: true' > apps/mobile/cargokit_options.yaml
+      - run: flutter pub get
+        working-directory: apps/mobile
+      - name: Build APK
+        run: flutter build apk --release --no-tree-shake-icons
+        working-directory: apps/mobile
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/release/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#release/v}"
+          else
+            VERSION="$(awk '/^version:/ {print $2; exit}' apps/mobile/pubspec.yaml)"
+          fi
+          echo "semver=${VERSION%%+*}" >> "$GITHUB_OUTPUT"
+      - name: Collect APK
+        run: |
+          mkdir -p dist
+          SUFFIX=""
+          if [ "${{ steps.signing.outputs.mode }}" = "debug" ]; then SUFFIX="-debugsigned"; fi
+          cp apps/mobile/build/app/outputs/flutter-apk/app-release.apk "dist/CC-Pocket-android-v${{ steps.version.outputs.semver }}${SUFFIX}.apk"
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/*.apk
+          retention-days: 14
+
+  release:
+    needs: [windows, linux, macos, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Flatten artifacts
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.tar.gz' -o -name '*.dmg' -o -name '*.apk' \) -exec cp {} dist/ \;
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          ls -la dist
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/release/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#release/v}"
+          cat > notes.md <<'EOF'
+          CC Pocket build from the fork dmitry575/ccpocket for every platform that can be produced without store credentials.
+
+          | Platform | File | Notes |
+          |---|---|---|
+          | Windows | `CC-Pocket-Setup-x64-v*.exe` | Installer (Inno Setup); not code-signed, SmartScreen asks once. `CC-Pocket-windows-x64-v*.zip` is the portable build. |
+          | macOS | `CC-Pocket-macos-v*.dmg` | Ad-hoc signed, not notarized: on first launch use right-click → Open, or `xattr -d com.apple.quarantine "/Applications/CC Pocket.app"`. Auto-update (Sparkle) is disabled in this build. |
+          | Linux | `CC-Pocket-linux-x64-v*.tar.gz` | Unpack and run `ccpocket`. Needs GTK 3, libsecret, libmpv. |
+          | Android | `CC-Pocket-android-v*.apk` | Signed with the fork key (or the debug key when the name ends with `-debugsigned`). Allow "unknown sources" to install. |
+          | iOS | — | Not buildable here: an installable IPA requires an Apple Developer account. Use the App Store version of CC Pocket. |
+
+          `SHA256SUMS.txt` lists checksums of all files.
+          EOF
+          TITLE="CC Pocket (fork) ${VERSION} — all platforms"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "$TITLE" --notes-file notes.md
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --title "$TITLE" --notes-file notes.md
+          fi

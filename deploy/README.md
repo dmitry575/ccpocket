@@ -57,6 +57,14 @@ cd /root/ccpocket && git fetch origin && git checkout worktree-windows-installer
 | `BRIDGE_MAX_LIVE_SESSIONS` | `5` | жёсткий предел живых процессов агентов: сначала вытесняются простаивающие, потом отказ `session_limit_reached` |
 | `BRIDGE_DISABLE_MDNS` | `1` | на сервере mDNS не нужен |
 
+## Релизы форка
+
+- Только Windows: тег `windows-setup/v<версия>+<сборка>` → workflow `windows-installer.yml` (установщик + zip).
+- Все платформы разом: тег `release/v<версия>+<сборка>` → workflow `all-platforms-release.yml`: Windows (установщик + zip), macOS (dmg, подпись ad-hoc без нотаризации), Linux (tar.gz), Android (apk). iOS не собирается: нужен аккаунт разработчика Apple.
+- Подпись Android: ключ в `/root/ccpocket-secrets/`, загрузка в секреты репозитория `bash deploy/set-android-secrets.sh` (один раз). Без секретов apk подписывается отладочным ключом.
+
+Пример выпуска: `git tag -a release/v1.145.4+278 -m "..." && git push origin release/v1.145.4+278`.
+
 ## Что проверить после установки
 
 ```bash
