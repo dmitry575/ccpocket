@@ -288,9 +288,10 @@ jobs:
           `SHA256SUMS.txt` lists checksums of all files.
           EOF
           TITLE="CC Pocket (fork) ${VERSION} — all platforms"
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --title "$TITLE" --notes-file notes.md
-            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          # No checkout in this job: gh needs the repository named explicitly.
+          if gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --title "$TITLE" --notes-file notes.md
+            gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" dist/* --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/* --title "$TITLE" --notes-file notes.md
+            gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" dist/* --title "$TITLE" --notes-file notes.md
           fi
