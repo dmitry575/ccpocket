@@ -192,7 +192,26 @@ export interface SessionSummary {
 }
 
 export const MAX_HISTORY_PER_SESSION = 100;
-const MAX_IDLE_SESSIONS = 30;
+
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+/**
+ * Thrown by {@link SessionManager.create} when the live-process cap is reached
+ * and no idle session can be evicted to make room.
+ */
+export class SessionLimitError extends Error {
+  readonly code = "session_limit_reached" as const;
+  constructor(readonly limit: number) {
+    super(
+      `Session limit reached: ${limit} agent processes are already running. ` +
+        "Stop a session or raise BRIDGE_MAX_LIVE_SESSIONS.",
+    );
+    this.name = "SessionLimitError";
+  }
+}
 
 export type GalleryImageCallback = (meta: GalleryImageMeta) => void;
 export type SessionUpdatedCallback = (sessionId: string) => void;
@@ -284,6 +303,8 @@ export class SessionManager {
   private worktreeStore: WorktreeStore | null;
   private onSessionUpdated: SessionUpdatedCallback | null;
   private readonly idleSessionTtlMs: number;
+  private readonly maxIdleSessions: number;
+  private readonly maxLiveSessions: number;
   private idleEvictionTimer: ReturnType<typeof setInterval>;
 
   /** Cache completion entities per provider and effective cwd. */
@@ -318,6 +339,15 @@ export class SessionManager {
     this.idleSessionTtlMs = Number.isFinite(idleTtlMinutes) && idleTtlMinutes > 0
       ? idleTtlMinutes * 60 * 1000
       : Infinity;
+    // Each live Claude/Codex session is a separate agent process (~300 MB for
+    // `claude`); both caps are configurable per host.
+    this.maxIdleSessions = positiveIntFromEnv("BRIDGE_MAX_IDLE_SESSIONS", 30);
+    // Default keeps upstream behaviour (up to 30 idle + a few running); small
+    // hosts should set both explicitly (e.g. 3 idle / 5 live on 4 GB RAM).
+    this.maxLiveSessions = positiveIntFromEnv(
+      "BRIDGE_MAX_LIVE_SESSIONS",
+      Math.max(40, this.maxIdleSessions + 8),
+    );
     this.idleEvictionTimer = setInterval(
       () => this.evictStaleIdleSessions(),
       60 * 1000,
@@ -345,6 +375,7 @@ export class SessionManager {
           ),
         }
       : undefined;
+    this.ensureCapacityForNewSession();
     const proc =
       effectiveProvider === "codex" ? new CodexProcess() : new SdkProcess();
     const messageDelivery: ProcessMessageDeliveryState = {
@@ -1906,21 +1937,70 @@ export class SessionManager {
     return true;
   }
 
-  private evictStaleIdleSessions(): void {
-    const now = Date.now();
-    const idleSessions = Array.from(this.sessions.values())
+  /**
+   * Idle sessions that may be stopped without losing work, oldest first:
+   * nothing queued, no pending permission, no Codex recovery waiting, and no
+   * Claude background task that would wake the session up later.
+   */
+  private evictableIdleSessions(): SessionInfo[] {
+    return Array.from(this.sessions.values())
       .filter((session) => session.status === "idle" &&
         !session.codexQueuedInput &&
         session.process.getPendingPermissions().length === 0 &&
         !(session.provider === "codex" &&
-          (session.process as CodexProcess).getRecoveryState().phase === "waiting"))
+          (session.process as CodexProcess).getRecoveryState().phase === "waiting") &&
+        !(session.process instanceof SdkProcess && session.process.hasBackgroundWork()))
       .sort(
         (left, right) =>
           left.lastActivityAt.getTime() - right.lastActivityAt.getTime(),
       );
+  }
+
+  /**
+   * True when the session is idle with nothing in flight (no queued input,
+   * no pending permission, no background task), i.e. it can be stopped and
+   * recreated without losing work.
+   */
+  isEvictableIdle(id: string): boolean {
+    return this.evictableIdleSessions().some((session) => session.id === id);
+  }
+
+  /** Sessions whose agent process is alive, regardless of status. */
+  private liveSessionCount(): number {
+    let count = 0;
+    for (const session of this.sessions.values()) {
+      if (session.process.isRunning) count += 1;
+    }
+    return count;
+  }
+
+  /**
+   * Enforce BRIDGE_MAX_LIVE_SESSIONS before spawning another agent process:
+   * evict the oldest evictable idle sessions first, then refuse.
+   */
+  private ensureCapacityForNewSession(): void {
+    if (this.liveSessionCount() < this.maxLiveSessions) return;
+    const evicted: string[] = [];
+    for (const session of this.evictableIdleSessions()) {
+      if (this.liveSessionCount() < this.maxLiveSessions) break;
+      console.log(
+        `[session] Evicting idle session ${session.id} to stay under BRIDGE_MAX_LIVE_SESSIONS=${this.maxLiveSessions}`,
+      );
+      this.destroy(session.id);
+      evicted.push(session.id);
+    }
+    if (evicted.length > 0) this.onSessionUpdated?.(evicted.at(-1)!);
+    if (this.liveSessionCount() >= this.maxLiveSessions) {
+      throw new SessionLimitError(this.maxLiveSessions);
+    }
+  }
+
+  private evictStaleIdleSessions(): void {
+    const now = Date.now();
+    const idleSessions = this.evictableIdleSessions();
     const staleIdleSessions = idleSessions.filter(
       (session, index) =>
-        index < Math.max(0, this.idleSessionCount() - MAX_IDLE_SESSIONS) ||
+        index < Math.max(0, this.idleSessionCount() - this.maxIdleSessions) ||
         now - session.lastActivityAt.getTime() >= this.idleSessionTtlMs,
     );
 

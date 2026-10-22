@@ -23,6 +23,8 @@ const { codexInstances, sdkInstances, fakeDirs, fakeFiles } = vi.hoisted(
     }>,
     sdkInstances: [] as Array<{
       permissionMode: string;
+      isRunning: boolean;
+      hasBackgroundWork: ReturnType<typeof vi.fn>;
       getPendingPermissions: ReturnType<typeof vi.fn>;
       getPendingPermission: ReturnType<typeof vi.fn>;
       start: ReturnType<typeof vi.fn>;
@@ -90,6 +92,7 @@ vi.mock("./codex-process.js", () => ({
       : effort,
   CodexProcess: class MockCodexProcess extends EventEmitter {
     public isWaitingForInput = false;
+    public isRunning = true;
     public getGoal = vi.fn(async () => null);
     public getPendingPermission = vi.fn(() => undefined);
     public getPendingPermissions = vi.fn(() => {
@@ -113,6 +116,8 @@ vi.mock("./codex-process.js", () => ({
 vi.mock("./sdk-process.js", () => ({
   SdkProcess: class MockSdkProcess extends EventEmitter {
     public permissionMode = "default";
+    public isRunning = true;
+    public hasBackgroundWork = vi.fn(() => false);
     public getPendingPermissions = vi.fn(() => {
       const pending = this.getPendingPermission();
       return pending ? [pending] : [];
@@ -968,6 +973,54 @@ describe("SessionManager codex path", () => {
     expect(manager.list()).toHaveLength(30);
     expect(onSessionUpdated).toHaveBeenCalledOnce();
     manager.destroyAll();
+  });
+
+  it("does not evict an idle Claude session that still has background tasks", () => {
+    vi.useFakeTimers();
+    vi.stubEnv("BRIDGE_IDLE_SESSION_TTL_MINUTES", "1");
+    const manager = new SessionManager(() => {});
+    try {
+      const busyId = manager.create("/tmp/bg-busy");
+      const freeId = manager.create("/tmp/bg-free");
+      const busyProc = sdkInstances.at(-2)!;
+      const freeProc = sdkInstances.at(-1)!;
+      busyProc.hasBackgroundWork.mockReturnValue(true);
+      busyProc.emit("status", "idle" satisfies ProcessStatus);
+      freeProc.emit("status", "idle" satisfies ProcessStatus);
+      vi.advanceTimersByTime(2 * 60 * 1000);
+      expect(manager.get(freeId)).toBeUndefined();
+      expect(manager.get(busyId)).toBeDefined();
+      expect(busyProc.stop).not.toHaveBeenCalled();
+    } finally {
+      manager.destroyAll();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("caps live agent processes: evicts idle sessions first, then refuses", () => {
+    vi.stubEnv("BRIDGE_MAX_LIVE_SESSIONS", "2");
+    const manager = new SessionManager(() => {});
+    try {
+      const first = manager.create("/tmp/cap-1");
+      const second = manager.create("/tmp/cap-2");
+      manager.get(first)!.lastActivityAt = new Date(Date.now() - 120_000);
+      manager.get(second)!.lastActivityAt = new Date(Date.now() - 60_000);
+      for (const proc of sdkInstances.slice(-2)) proc.emit("status", "idle" satisfies ProcessStatus);
+
+      const third = manager.create("/tmp/cap-3");
+      expect(manager.get(first)).toBeUndefined();
+      expect(manager.get(second)).toBeDefined();
+      expect(manager.get(third)).toBeDefined();
+      expect(manager.list()).toHaveLength(2);
+
+      for (const proc of sdkInstances.slice(-2)) proc.emit("status", "running" satisfies ProcessStatus);
+      expect(() => manager.create("/tmp/cap-4")).toThrowError(/Session limit reached: 2/);
+      expect(manager.list()).toHaveLength(2);
+    } finally {
+      manager.destroyAll();
+      vi.unstubAllEnvs();
+    }
   });
 
   it("retains sessions waiting for automatic recovery when trimming idle sessions", () => {

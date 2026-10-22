@@ -45,6 +45,8 @@ cd /root/ccpocket && git pull && npm install --no-audit --no-fund && npm run bri
 | `BRIDGE_ALLOW_CLAUDE_OAUTH` | `1` | разрешить вход по подписке |
 | `BRIDGE_ALLOWED_DIRS` | `/root` | каталоги проектов |
 | `BRIDGE_IDLE_SESSION_TTL_MINUTES` | `30` | гасить простаивающие сессии (каждая держит процесс claude ≈300 МБ) |
+| `BRIDGE_MAX_IDLE_SESSIONS` | `3` | не держать больше стольких простаивающих процессов (в upstream 30) |
+| `BRIDGE_MAX_LIVE_SESSIONS` | `5` | жёсткий предел живых процессов агентов: сначала вытесняются простаивающие, потом отказ `session_limit_reached` |
 | `BRIDGE_DISABLE_MDNS` | `1` | на сервере mDNS не нужен |
 
 ## Что проверить после установки

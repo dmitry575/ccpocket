@@ -724,6 +724,13 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
 
   private initTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private sessionEndEmitted = false;
+  /**
+   * Background tasks (backgrounded shell commands, subagents, monitors) the
+   * CLI reported as live. While any exist the session looks idle between
+   * turns but will wake up on its own when a task finishes, so it must not
+   * be evicted as "idle".
+   */
+  private backgroundTaskIds = new Set<string>();
 
   // User message channel
   private userMessageResolve: ((msg: SDKUserMsg) => void) | null = null;
@@ -1254,6 +1261,34 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     };
   }
 
+  /** True while the CLI reports live background tasks for this session. */
+  hasBackgroundWork(): boolean {
+    return this.backgroundTaskIds.size > 0;
+  }
+
+  private trackBackgroundTasks(system: Record<string, unknown>): void {
+    switch (system.subtype) {
+      case "background_tasks_changed": {
+        // REPLACE semantics: the payload lists every live task.
+        const tasks = Array.isArray(system.tasks) ? (system.tasks as Array<{ task_id?: unknown }>) : [];
+        this.backgroundTaskIds = new Set(
+          tasks
+            .map((task) => task.task_id)
+            .filter((id): id is string => typeof id === "string"),
+        );
+        break;
+      }
+      case "task_started":
+        if (typeof system.task_id === "string") this.backgroundTaskIds.add(system.task_id);
+        break;
+      case "task_notification":
+        if (typeof system.task_id === "string") this.backgroundTaskIds.delete(system.task_id);
+        break;
+      default:
+        break;
+    }
+  }
+
   getPendingPermissions(): Array<{
     toolUseId: string;
     toolName: string;
@@ -1619,6 +1654,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     switch (msg.type) {
       case "system": {
         const system = msg as Record<string, unknown>;
+        this.trackBackgroundTasks(system);
         if (system.subtype === "status") {
           if (system.status === "compacting") {
             this.setStatus("compacting");

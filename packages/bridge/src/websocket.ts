@@ -14,6 +14,7 @@ import { textPreview } from "./text-preview.js";
 import { consumeFinderProof, verifyFinderSocketProof, revealInFinder } from "./finder-reveal.js";
 import {
   SessionManager,
+  SessionLimitError,
   MAX_HISTORY_PER_SESSION,
   type HistoryEntry,
   type SessionInfo,
@@ -2759,7 +2760,28 @@ export class BridgeWebSocketServer {
       }
 
       console.log(`[ws] Received: ${msg.type}`);
-      this.handleClientMessage(msg, ws);
+      this.handleClientMessage(msg, ws).catch((err: unknown) => {
+        // A handler that throws (e.g. the live-session cap in
+        // SessionManager.create) must answer the client instead of becoming
+        // an unhandled rejection.
+        const sessionId =
+          "sessionId" in msg && typeof msg.sessionId === "string"
+            ? msg.sessionId
+            : undefined;
+        const requestId =
+          "requestId" in msg && typeof msg.requestId === "string"
+            ? msg.requestId
+            : undefined;
+        console.error(`[ws] Error handling ${msg.type}:`, err);
+        this.send(ws, {
+          type: "error",
+          ...(sessionId ? { sessionId } : {}),
+          ...(requestId ? { requestId } : {}),
+          errorCode:
+            err instanceof SessionLimitError ? err.code : "internal_error",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
     });
 
     ws.on("close", () => {
@@ -5784,16 +5806,36 @@ export class BridgeWebSocketServer {
         if (msg.forkSession !== true) {
           const liveSession = this.findLiveClaudeSession(claudeSessionId);
           if (liveSession) {
-            console.log(
-              `[ws] resume_session: ${claudeSessionId} is already live as bridge session ${liveSession.id}; attaching`,
-            );
-            this.attachToLiveSession(ws, {
-              liveSession,
-              sourceSessionId: claudeSessionId,
-              projectPath: resumeProjectPath,
-              resumeRequestId: msg.resumeRequestId,
-            });
-            break;
+            // Only settings the client sent explicitly count; derived
+            // defaults must not replace a session the user reconfigured live.
+            const changesSettings =
+              (msg.model !== undefined && msg.model !== liveSession.model) ||
+              (msg.permissionMode !== undefined &&
+                msg.permissionMode !== liveSession.permissionMode) ||
+              (msg.sandboxMode !== undefined &&
+                (msg.sandboxMode === "on") !== (liveSession.sandboxEnabled ?? false));
+            if (
+              changesSettings &&
+              this.sessionManager.isEvictableIdle(liveSession.id)
+            ) {
+              // The user asked for different settings and nothing is in
+              // flight: replace the idle process instead of running two.
+              console.log(
+                `[ws] resume_session: replacing idle bridge session ${liveSession.id} for ${claudeSessionId} with new settings`,
+              );
+              this.sessionManager.destroy(liveSession.id);
+            } else {
+              console.log(
+                `[ws] resume_session: ${claudeSessionId} is already live as bridge session ${liveSession.id}; attaching`,
+              );
+              this.attachToLiveSession(ws, {
+                liveSession,
+                sourceSessionId: claudeSessionId,
+                projectPath: resumeProjectPath,
+                resumeRequestId: msg.resumeRequestId,
+              });
+              break;
+            }
           }
         }
 

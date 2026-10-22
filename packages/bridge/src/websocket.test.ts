@@ -107,6 +107,9 @@ vi.mock("./git-operations.js", async () => {
 
 vi.mock("./session.js", () => ({
   MAX_HISTORY_PER_SESSION: 100,
+  SessionLimitError: class SessionLimitError extends Error {
+    readonly code = "session_limit_reached";
+  },
   SessionManager: class MockSessionManager {
     private sessions = new Map<string, any>();
     private seq = 0;
@@ -387,6 +390,10 @@ vi.mock("./session.js", () => ({
 
     summary(sessionId: string) {
       return this.list().find((session) => session.id === sessionId);
+    }
+
+    isEvictableIdle(sessionId: string) {
+      return this.sessions.get(sessionId)?.status === "idle";
     }
 
     getCachedCommands() {
