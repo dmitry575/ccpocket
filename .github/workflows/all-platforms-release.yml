@@ -45,7 +45,8 @@ jobs:
             clang cmake ninja-build pkg-config libgtk-3-dev libsecret-1-dev \
             libmpv-dev libsqlite3-0 libsqlite3-dev xvfb
       - name: Disable precompiled Rust artifacts for Linux CI
-        run: printf '%s\n' 'use_precompiled_binaries: false' > apps/mobile/cargokit_options.yaml
+        run: |
+          printf '%s\n' 'use_precompiled_binaries: false' > apps/mobile/cargokit_options.yaml
       - run: flutter pub get
         working-directory: apps/mobile
       - name: Build Linux app
@@ -212,7 +213,8 @@ jobs:
           EOF
           echo "mode=release" >> "$GITHUB_OUTPUT"
       - name: Use precompiled Rust artifacts
-        run: printf '%s\n' 'use_precompiled_binaries: true' > apps/mobile/cargokit_options.yaml
+        run: |
+          printf '%s\n' 'use_precompiled_binaries: true' > apps/mobile/cargokit_options.yaml
       - run: flutter pub get
         working-directory: apps/mobile
       - name: Build APK
