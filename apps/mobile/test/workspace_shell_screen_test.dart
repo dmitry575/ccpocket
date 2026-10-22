@@ -2135,15 +2135,15 @@ void main() {
     expect(tester.getSize(list).width, 360);
     expect(find.byKey(const ValueKey('workspace_left_resize_handle')), findsOneWidget);
 
-    // Drag the handle to the right with a mouse (no touch slop): the list
-    // grows by the dragged distance.
+    // Drag the handle to the right: the list grows by the dragged distance
+    // minus the gesture slop the test harness spends on starting the drag.
     await tester.drag(
       find.byKey(const ValueKey('workspace_left_resize_handle')),
       const Offset(120, 0),
       kind: PointerDeviceKind.mouse,
     );
     await _pumpUi(tester);
-    expect(tester.getSize(list).width, closeTo(480, 2));
+    expect(tester.getSize(list).width, inInclusiveRange(460, 480));
 
     // Programmatic resize clamps to the minimum and to what the center pane leaves free.
     shellKey.currentState!.resizeLeftPane(50, 1400);
