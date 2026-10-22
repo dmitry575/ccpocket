@@ -5777,6 +5777,26 @@ export class BridgeWebSocketServer {
           );
           break;
         }
+        // A bridge session already drives this Claude session: attach the
+        // client to it instead of spawning a second `claude` process on the
+        // same transcript. Two resumed processes interleave their writes into
+        // one JSONL file (the CLI has no session lock) and cost ~300 MB each.
+        if (msg.forkSession !== true) {
+          const liveSession = this.findLiveClaudeSession(claudeSessionId);
+          if (liveSession) {
+            console.log(
+              `[ws] resume_session: ${claudeSessionId} is already live as bridge session ${liveSession.id}; attaching`,
+            );
+            this.attachToLiveSession(ws, {
+              liveSession,
+              sourceSessionId: claudeSessionId,
+              projectPath: resumeProjectPath,
+              resumeRequestId: msg.resumeRequestId,
+            });
+            break;
+          }
+        }
+
         // Look up worktree mapping for this Claude session
         const wtMapping = this.worktreeStore.get(claudeSessionId);
         let worktreeOpts:
@@ -7964,6 +7984,86 @@ export class BridgeWebSocketServer {
     if (this.resumeOperations.get(key) === operation) {
       this.resumeOperations.delete(key);
     }
+  }
+
+  /**
+   * Live bridge session (running `claude` process) that already owns the given
+   * Claude session id, if any. Sessions in the middle of being destroyed are
+   * not in the manager's list any more.
+   */
+  findLiveClaudeSession(claudeSessionId: string): SessionSummary | undefined {
+    return this.sessionManager
+      .list()
+      .find(
+        (session) =>
+          session.provider === "claude" &&
+          session.claudeSessionId === claudeSessionId,
+      );
+  }
+
+  /**
+   * Answer a resume request for a Claude session that is already live with the
+   * same messages a fresh resume would produce, so the client lands in the
+   * existing bridge session. Inputs the client queued while "resuming" are
+   * flushed into that session.
+   */
+  private attachToLiveSession(
+    ws: WebSocket,
+    params: {
+      liveSession: SessionSummary;
+      sourceSessionId: string;
+      projectPath: string;
+      resumeRequestId?: string;
+    },
+  ): void {
+    const { liveSession, sourceSessionId, projectPath, resumeRequestId } = params;
+    const sessionInfo = this.sessionManager.get(liveSession.id);
+    const cached = this.sessionManager.getCachedCommands(
+      "claude",
+      sessionInfo?.worktreePath ?? liveSession.projectPath,
+    );
+    this.send(ws, {
+      type: "system",
+      subtype: "session_resume_started",
+      sourceSessionId,
+      provider: "claude",
+      projectPath,
+      ...(resumeRequestId ? { resumeRequestId } : {}),
+    });
+    this.send(ws, {
+      ...this.buildSessionCreatedMessage({
+        sessionId: liveSession.id,
+        provider: "claude",
+        projectPath: liveSession.projectPath,
+        session: sessionInfo,
+        permissionMode: liveSession.permissionMode,
+        executionMode: liveSession.executionMode,
+        planMode: liveSession.planMode,
+        ...(liveSession.sandboxEnabled !== undefined
+          ? { sandboxMode: liveSession.sandboxEnabled ? "on" : "off" }
+          : {}),
+        resumeRequestId,
+        ...(cached
+          ? {
+              slashCommands: cached.slashCommands,
+              skills: cached.skills,
+              ...(cached.skillMetadata ? { skillMetadata: cached.skillMetadata } : {}),
+              apps: cached.apps,
+              ...(cached.appMetadata ? { appMetadata: cached.appMetadata } : {}),
+              plugins: cached.plugins,
+              ...(cached.pluginMetadata ? { pluginMetadata: cached.pluginMetadata } : {}),
+            }
+          : {}),
+      }),
+      claudeSessionId: sourceSessionId,
+    } as SystemServerMessage);
+    this.flushPendingClaudeResumeInputs(ws, sourceSessionId, liveSession.id);
+    this.recordDebugEvent(liveSession.id, {
+      direction: "internal",
+      channel: "bridge",
+      type: "session_attached",
+      detail: `provider=claude session=${sourceSessionId}`,
+    });
   }
 
   private ensurePendingClaudeResume(

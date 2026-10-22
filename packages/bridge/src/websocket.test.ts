@@ -2518,6 +2518,71 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("attaches to an already live Claude session instead of resuming it a second time", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const manager = (bridge as any).sessionManager;
+    const liveId = manager.create("/tmp/project-a", { sessionId: "claude-live-1" });
+    manager.get(liveId).claudeSessionId = "claude-live-1";
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "resume_session",
+        sessionId: "claude-live-1",
+        projectPath: "/tmp/project-a",
+        resumeRequestId: "req-attach",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // No second process/session and no transcript re-read.
+    expect(manager.list()).toHaveLength(1);
+    expect(getSessionHistoryMock).not.toHaveBeenCalled();
+    const sends = ws.send.mock.calls.map((c: unknown[]) => JSON.parse(c[0] as string));
+    expect(sends).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "session_resume_started",
+        sourceSessionId: "claude-live-1",
+        resumeRequestId: "req-attach",
+      }),
+    );
+    expect(sends).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "session_created",
+        sessionId: liveId,
+        claudeSessionId: "claude-live-1",
+        resumeRequestId: "req-attach",
+      }),
+    );
+    bridge.close();
+  });
+
+  it("still forks a live Claude session when forkSession is requested", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const manager = (bridge as any).sessionManager;
+    const liveId = manager.create("/tmp/project-a", { sessionId: "claude-live-2" });
+    manager.get(liveId).claudeSessionId = "claude-live-2";
+    getSessionHistoryMock.mockResolvedValue([]);
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "resume_session",
+        sessionId: "claude-live-2",
+        projectPath: "/tmp/project-a",
+        forkSession: true,
+      },
+      ws,
+    );
+    await vi.waitFor(() => expect(manager.list().length).toBe(2));
+    expect(getSessionHistoryMock).toHaveBeenCalledWith("claude-live-2");
+    bridge.close();
+  });
+
   it("forwards selected codex profile without an explicit permissions mode on resume", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
