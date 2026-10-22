@@ -1,0 +1,46 @@
+name: Flutter check (fork)
+
+# Fork-only: static analysis plus the widget tests touched by fork changes.
+# Upstream's full Test workflow only runs on pull requests and pushes to main.
+on:
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: Space-separated test files (empty = whole suite)
+        required: false
+        default: test/workspace_shell_screen_test.dart
+  push:
+    branches: [worktree-windows-installer]
+    paths:
+      - 'apps/mobile/**'
+      - '.github/workflows/flutter-check.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read Flutter version from .mise.toml
+        id: mise
+        run: echo "flutter_version=$(grep 'flutter' .mise.toml | sed 's/.*= *\"//' | sed 's/\"//')" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ steps.mise.outputs.flutter_version }}
+          cache: true
+      - run: flutter pub get
+        working-directory: apps/mobile
+      - run: dart analyze .
+        working-directory: apps/mobile
+      - name: Run Flutter tests
+        working-directory: apps/mobile
+        shell: bash
+        run: |
+          TESTS="${{ github.event.inputs.tests }}"
+          if [ -z "$TESTS" ] && [ "${{ github.event_name }}" = "push" ]; then
+            TESTS="test/workspace_shell_screen_test.dart"
+          fi
+          if [ -z "$TESTS" ]; then
+            flutter test
+          else
+            flutter test $TESTS
+          fi
