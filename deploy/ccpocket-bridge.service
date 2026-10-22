@@ -1,0 +1,20 @@
+[Unit]
+Description=CC Pocket bridge (fork dmitry575/ccpocket) - Claude Code remote sessions
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/ccpocket/packages/bridge
+EnvironmentFile=/etc/ccpocket-bridge.env
+ExecStart=/usr/bin/node /root/ccpocket/packages/bridge/dist/index.js
+Restart=always
+RestartSec=5
+MemoryHigh=1800M
+MemoryMax=2200M
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

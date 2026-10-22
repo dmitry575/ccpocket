@@ -1,0 +1,9 @@
+[Unit]
+Description=Reload nginx when the IP certificate used by the CC Pocket bridge is renewed
+
+[Path]
+PathChanged=/root/cert/ip/fullchain.pem
+Unit=ccpocket-nginx-reload.service
+
+[Install]
+WantedBy=multi-user.target

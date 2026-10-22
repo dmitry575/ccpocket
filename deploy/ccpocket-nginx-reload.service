@@ -1,0 +1,7 @@
+[Unit]
+Description=Reload nginx after certificate renewal (triggered by ccpocket-nginx-reload.path)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nginx -t
+ExecStart=/bin/systemctl reload nginx

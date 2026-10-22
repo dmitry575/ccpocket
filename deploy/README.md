@@ -1,0 +1,56 @@
+# Развёртывание моста на сервере (форк dmitry575/ccpocket)
+
+Схема: приложение CC Pocket → `wss://<IP>:8766` (nginx, сертификат Let's Encrypt на IP) → `ws://127.0.0.1:8765` (мост) → Claude Agent SDK → `claude` с уже выполненным входом по подписке.
+
+## Установка одной командой
+
+```bash
+bash /root/ccpocket/deploy/install.sh
+```
+
+Скрипт:
+
+1. копирует конфиг nginx `nginx-ccpocket-bridge.conf` в `sites-available` и включает его (порт 8766, TLS);
+2. создаёт `/etc/ccpocket-bridge.env` с новым случайным ключом доступа (если файла ещё нет);
+3. ставит системную службу `ccpocket-bridge` (`ccpocket-bridge.service`), включает и запускает её;
+4. ставит пару `ccpocket-nginx-reload.path` + `.service`: при продлении сертификата `/root/cert/ip/fullchain.pem` nginx перезагружается сам;
+5. печатает ссылку подключения для приложения.
+
+## Подключение приложения
+
+В CC Pocket (App Store / Google Play) выбрать подключение по адресу и ввести ссылку вида:
+
+```
+адрес: wss://167.104.102.253:8766
+ключ (token): значение BRIDGE_API_KEY из /etc/ccpocket-bridge.env
+или одной ссылкой: ccpocket://connect?url=wss%3A%2F%2F167.104.102.253%3A8766&token=<ключ>
+```
+
+Либо показать QR-код из журнала службы: `journalctl -u ccpocket-bridge -n 80`.
+
+## Обновление моста из форка
+
+```bash
+cd /root/ccpocket && git pull && npm install --no-audit --no-fund && npm run bridge:build && systemctl restart ccpocket-bridge
+```
+
+## Переменные окружения
+
+| Переменная | Значение | Зачем |
+|---|---|---|
+| `BRIDGE_HOST` | `127.0.0.1` | наружу смотрит только nginx |
+| `BRIDGE_PORT` | `8765` | порт моста на петле |
+| `BRIDGE_API_KEY` | случайный | ключ доступа приложения |
+| `BRIDGE_PUBLIC_WS_URL` | `wss://167.104.102.253:8766` | адрес в QR и ссылке |
+| `BRIDGE_ALLOW_CLAUDE_OAUTH` | `1` | разрешить вход по подписке |
+| `BRIDGE_ALLOWED_DIRS` | `/root` | каталоги проектов |
+| `BRIDGE_IDLE_SESSION_TTL_MINUTES` | `30` | гасить простаивающие сессии (каждая держит процесс claude ≈300 МБ) |
+| `BRIDGE_DISABLE_MDNS` | `1` | на сервере mDNS не нужен |
+
+## Что проверить после установки
+
+```bash
+systemctl status ccpocket-bridge --no-pager
+journalctl -u ccpocket-bridge -n 50 --no-pager
+ss -tlnp | grep -E ':8765|:8766'
+```
