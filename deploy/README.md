@@ -30,9 +30,17 @@ bash /root/ccpocket/deploy/install.sh
 
 ## Обновление моста из форка
 
+Рабочая ветка форка: `worktree-windows-installer` (в ней развёртывание, исправления после аудита и установщик Windows).
+
 ```bash
-cd /root/ccpocket && git pull && npm install --no-audit --no-fund && npm run bridge:build && systemctl restart ccpocket-bridge
+cd /root/ccpocket && git fetch origin && git checkout worktree-windows-installer && git pull --ff-only \
+  && npm install --ignore-scripts --no-audit --no-fund && npm run bridge:build \
+  && bash deploy/install.sh
 ```
+
+`install.sh` не трогает существующий `/etc/ccpocket-bridge.env`. Новые переменные (`BRIDGE_MAX_IDLE_SESSIONS=3`, `BRIDGE_MAX_LIVE_SESSIONS=5`) допишите в него руками, если файл создан раньше.
+
+После выкладки версии с авторизацией HTTP-маршрутов галерею в nginx можно открыть обратно (убрать строку `location /api/gallery { return 403; }` в `/etc/nginx/sites-available/ccpocket-bridge`): мост сам требует ключ. `/usage` и `/doctor` лучше оставить закрытыми, клиент ими не пользуется.
 
 ## Переменные окружения
 
