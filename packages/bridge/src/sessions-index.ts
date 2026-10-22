@@ -302,6 +302,7 @@ const PARALLEL_FILE_READ_LIMIT = 32;
 /** Head/Tail byte sizes for partial JSONL reads. */
 const HEAD_BYTES = 16384; // 16KB — covers first user entry + metadata
 const TAIL_BYTES = 8192;  // 8KB — covers last entries for modified/lastPrompt
+const ENTRYPOINT_LOOKBACK_BYTES = 256 * 1024; // wider end-of-file read when the entrypoint was not in head/tail
 const CODEX_HEAD_BYTES = 131072; // 128KB — Codex turn_context can be large
 const CODEX_TAIL_BYTES = 16384;
 const CODEX_MAX_TAIL_BYTES = 4 * 1024 * 1024;
@@ -710,6 +711,17 @@ async function parseClaudeJsonlFileFast(
     const cleanTail = firstNewline >= 0 ? tailRaw.slice(firstNewline + 1) : "";
 
     parsedChunks = parseFromChunks(sessionId, headStr, cleanTail);
+
+    // Transcripts with long multi-byte (e.g. Cyrillic) messages can keep the
+    // entrypoint out of both chunks; one wider read of the end of the file
+    // settles it without streaming the whole transcript.
+    if (parsedChunks.entry && !parsedChunks.entry.entrypoint) {
+      const extraBytes = Math.min(fileSize, ENTRYPOINT_LOOKBACK_BYTES);
+      const extraBuf = Buffer.alloc(extraBytes);
+      await fh.read(extraBuf, 0, extraBytes, fileSize - extraBytes);
+      const epMatch = extraBuf.toString("utf-8").match(RE_ENTRYPOINT);
+      if (epMatch) parsedChunks.entry.entrypoint = epMatch[1];
+    }
   } finally {
     await fh.close();
   }
