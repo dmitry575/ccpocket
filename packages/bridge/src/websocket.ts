@@ -10385,7 +10385,28 @@ export class BridgeWebSocketServer {
         if (!isPathWithinAllowedDirectory(absPath, cwd, this.platform)) {
           return { error: "Invalid file path" };
         }
-        buf = await readFile(absPath);
+        // Lexical checks pass for a symlink inside the project that points
+        // anywhere on disk; follow it and re-check the canonical target
+        // against the project and the allowed roots (same rule as read_file).
+        let canonicalPath: string;
+        try {
+          canonicalPath = await realpath(absPath);
+        } catch {
+          return { error: "File not found" };
+        }
+        let canonicalCwd = cwd;
+        try {
+          canonicalCwd = await realpath(cwd);
+        } catch {
+          // keep cwd as configured
+        }
+        if (
+          !isPathWithinAllowedDirectory(canonicalPath, canonicalCwd, this.platform) ||
+          !(await this.isCanonicalPathAllowed(canonicalPath))
+        ) {
+          return { error: "Invalid file path" };
+        }
+        buf = await readFile(canonicalPath);
       }
 
       if (buf.length > BridgeWebSocketServer.MAX_IMAGE_SIZE) {

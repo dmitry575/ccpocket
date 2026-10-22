@@ -1136,6 +1136,16 @@ describe("createBranch", () => {
     createBranch(repo, "dup-branch", false);
     expect(() => createBranch(repo, "dup-branch", false)).toThrow();
   });
+
+  it("rejects option-looking and malformed branch names before calling git", () => {
+    for (const name of ["--orphan", "-f", "", "bad name", "bad..name", "bad/", "bad.lock"]) {
+      expect(() => createBranch(repo, name, false), name).toThrow(/Invalid branch name/);
+      expect(() => createBranch(repo, name, true), name).toThrow(/Invalid branch name/);
+      expect(() => checkoutBranch(repo, name), name).toThrow(/Invalid branch name/);
+    }
+    const branches = execFileSync("git", ["branch", "--list"], { cwd: repo, encoding: "utf-8" });
+    expect(branches).not.toMatch(/orphan/);
+  });
 });
 
 describe("checkoutBranch", () => {

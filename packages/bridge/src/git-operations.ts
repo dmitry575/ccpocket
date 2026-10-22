@@ -95,11 +95,42 @@ function withGitPathConfig(args: string[]): string[] {
   return ["-c", "core.quotePath=false", ...args];
 }
 
+/**
+ * Upper bound for a single git invocation. All git calls here are
+ * synchronous and block the bridge's event loop (every client, every
+ * session), so a hung command must fail instead of freezing the process.
+ */
+export const GIT_LOCAL_TIMEOUT_MS = 60_000;
+/** Network operations (fetch/pull/push) may legitimately take longer. */
+export const GIT_NETWORK_TIMEOUT_MS = 180_000;
+
 function git(args: string[], cwd: string): string {
   return execFileSync("git", withGitPathConfig(args), {
     cwd,
     encoding: "utf-8",
+    timeout: GIT_LOCAL_TIMEOUT_MS,
   }).trim();
+}
+
+/**
+ * Validate a user-supplied branch name before it reaches `git checkout` /
+ * `git branch`: refuse option-looking names (`-f`, `--orphan`) and anything
+ * `git check-ref-format --branch` rejects.
+ */
+export function assertValidBranchName(name: string, cwd: string): void {
+  if (!name || name.startsWith("-") || /[\s\0]/.test(name)) {
+    throw new Error(`Invalid branch name: ${JSON.stringify(name)}`);
+  }
+  try {
+    execFileSync("git", ["check-ref-format", "--branch", name], {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: GIT_LOCAL_TIMEOUT_MS,
+    });
+  } catch {
+    throw new Error(`Invalid branch name: ${JSON.stringify(name)}`);
+  }
 }
 
 function buildHunkPatch(
@@ -738,9 +769,13 @@ function toPosixRelativePath(path: string): string {
 export function gitPush(projectPath: string): void {
   const cwd = resolveProject(projectPath);
   const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
-  execFileSync("git", ["push", "--set-upstream", "origin", branch], {
+  // The branch name comes from the working copy, so it is as trusted as the
+  // repository itself; still keep it out of option position.
+  assertValidBranchName(branch, cwd);
+  execFileSync("git", ["push", "--set-upstream", "origin", "--", branch], {
     cwd,
     encoding: "utf-8",
+    timeout: GIT_NETWORK_TIMEOUT_MS,
   });
 }
 
@@ -821,17 +856,33 @@ export function createBranch(
   checkout?: boolean,
 ): void {
   const cwd = resolveProject(projectPath);
+  assertValidBranchName(name, cwd);
   if (checkout) {
-    execFileSync("git", ["checkout", "-b", name], { cwd, encoding: "utf-8" });
+    execFileSync("git", ["checkout", "-b", name], {
+      cwd,
+      encoding: "utf-8",
+      timeout: GIT_LOCAL_TIMEOUT_MS,
+    });
   } else {
-    execFileSync("git", ["branch", name], { cwd, encoding: "utf-8" });
+    execFileSync("git", ["branch", "--", name], {
+      cwd,
+      encoding: "utf-8",
+      timeout: GIT_LOCAL_TIMEOUT_MS,
+    });
   }
 }
 
 /** Checkout an existing branch. */
 export function checkoutBranch(projectPath: string, branch: string): void {
   const cwd = resolveProject(projectPath);
-  execFileSync("git", ["checkout", branch], { cwd, encoding: "utf-8" });
+  assertValidBranchName(branch, cwd);
+  // `--` is not usable here (it would mean "restore paths"), but the name is
+  // validated above so it cannot start with `-`.
+  execFileSync("git", ["checkout", branch], {
+    cwd,
+    encoding: "utf-8",
+    timeout: GIT_LOCAL_TIMEOUT_MS,
+  });
 }
 
 /** Revert (discard) unstaged changes for specific files. */
@@ -1030,6 +1081,7 @@ export function gitPull(projectPath: string): {
     const output = execFileSync("git", ["pull"], {
       cwd,
       encoding: "utf-8",
+      timeout: GIT_NETWORK_TIMEOUT_MS,
     }).trim();
     return { success: true, message: output };
   } catch (err) {
