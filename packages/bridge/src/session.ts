@@ -18,6 +18,7 @@ import {
   type StartOptions,
   type RewindFilesResult,
 } from "./sdk-process.js";
+import { knownSessions } from "./known-sessions.js";
 import {
   CodexProcess,
   normalizeCodexReasoningEffortForModel,
@@ -448,6 +449,7 @@ export class SessionManager {
       // can return it immediately (before the SDK sends a system/result event).
       claudeSessionId: options?.sessionId,
     };
+    if (effectiveProvider === "claude") knownSessions.markKnown(options?.sessionId);
     if (effectiveProvider === "codex") {
       this.seedCodexPastUserTurnUuidMap(session);
     }
@@ -548,10 +550,12 @@ export class SessionManager {
           // Capture Claude session_id from result events
           if (msg.type === "result" && "sessionId" in msg && msg.sessionId) {
             session.claudeSessionId = msg.sessionId;
+            if (session.provider === "claude") knownSessions.markKnown(msg.sessionId);
             this.saveWorktreeMapping(session);
           }
           if (msg.type === "system" && "sessionId" in msg && msg.sessionId) {
             session.claudeSessionId = msg.sessionId;
+            if (session.provider === "claude") knownSessions.markKnown(msg.sessionId);
             this.saveWorktreeMapping(session);
           }
 
@@ -576,6 +580,7 @@ export class SessionManager {
           // Codex: capture thread_id for session tracking and worktree restore.
           if (msg.type === "system" && "sessionId" in msg && msg.sessionId) {
             session.claudeSessionId = msg.sessionId;
+            if (session.provider === "claude") knownSessions.markKnown(msg.sessionId);
             this.saveWorktreeMapping(session);
             if (session.codexSettings?.profile) {
               void saveCodexSessionProfile(

@@ -2899,3 +2899,57 @@ describe("recent sessions grouped by git repository", () => {
     expect(entry?.resumeCwd).toBeUndefined();
   });
 });
+
+describe("headless (claude -p / SDK) sessions are hidden unless the bridge owns them", () => {
+  const oldHome = process.env.HOME;
+  const oldShow = process.env.BRIDGE_SHOW_HEADLESS_SESSIONS;
+  let tempHome: string;
+
+  beforeEach(() => {
+    tempHome = mkdtempSync(join(tmpdir(), "ccpocket-test-headless-home-"));
+    process.env.HOME = tempHome;
+    delete process.env.BRIDGE_SHOW_HEADLESS_SESSIONS;
+    const dir = join(tempHome, ".claude", "projects", "-tmp-project-h");
+    mkdirSync(dir, { recursive: true });
+    const line = (entrypoint: string, text: string) =>
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: text },
+        cwd: "/tmp/project-h",
+        entrypoint,
+        timestamp: "2026-01-01T00:00:00.000Z",
+      });
+    writeFileSync(join(dir, "interactive-1.jsonl"), line("cli", "typed in a terminal"));
+    writeFileSync(join(dir, "headless-1.jsonl"), line("sdk-cli", "nightly article writer"));
+    writeFileSync(join(dir, "bridge-1.jsonl"), line("sdk-cli", "started from the phone"));
+  });
+  afterEach(() => {
+    process.env.HOME = oldHome;
+    if (oldShow === undefined) delete process.env.BRIDGE_SHOW_HEADLESS_SESSIONS;
+    else process.env.BRIDGE_SHOW_HEADLESS_SESSIONS = oldShow;
+    rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  it("records the entrypoint and hides unknown headless sessions by default", async () => {
+    const { sessions } = await getAllRecentSessions({
+      limit: 50,
+      knownSessionIds: new Set(["bridge-1"]),
+    });
+    const ids = sessions.map((s) => s.sessionId).sort();
+    expect(ids).toEqual(["bridge-1", "interactive-1"]);
+    expect(sessions.find((s) => s.sessionId === "interactive-1")?.entrypoint).toBe("cli");
+    expect(sessions.find((s) => s.sessionId === "bridge-1")?.entrypoint).toBe("sdk-cli");
+  });
+
+  it("keeps exact id lookups and the opt-out working", async () => {
+    const exact = await getAllRecentSessions({ limit: 1, sessionId: "headless-1", knownSessionIds: new Set() });
+    expect(exact.sessions.map((s) => s.sessionId)).toEqual(["headless-1"]);
+
+    const shown = await getAllRecentSessions({ limit: 50, hideHeadless: false, knownSessionIds: new Set() });
+    expect(shown.sessions.map((s) => s.sessionId).sort()).toEqual(["bridge-1", "headless-1", "interactive-1"]);
+
+    process.env.BRIDGE_SHOW_HEADLESS_SESSIONS = "1";
+    const viaEnv = await getAllRecentSessions({ limit: 50, knownSessionIds: new Set() });
+    expect(viaEnv.sessions).toHaveLength(3);
+  });
+});

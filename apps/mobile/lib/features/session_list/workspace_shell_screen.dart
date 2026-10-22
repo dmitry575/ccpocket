@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../features/claude_session/claude_session_screen.dart';
 import '../../features/codex_session/codex_session_screen.dart';
@@ -37,6 +38,9 @@ const _paneResizePointerHandleWidth = 12.0;
 const _paneResizeTouchHandleWidth = 44.0;
 const _minCenterPaneWidth = 360.0;
 const _minRightPaneWidth = 240.0;
+const _minLeftPaneWidth = 220.0;
+/// SharedPreferences key for the user-chosen width of the session list pane.
+const _leftPaneWidthPrefKey = 'workspace_left_pane_width';
 
 enum _WorkspaceLayoutMode { single, multiPane }
 
@@ -52,13 +56,28 @@ double _rightPaneWidth(double width) {
   return width >= 1360 ? 380 : 320;
 }
 
-double _maxRightPaneWidth({required double totalWidth}) {
-  final leftWidth = _leftPaneWidth(totalWidth);
+double _maxRightPaneWidth({required double totalWidth, double? leftWidth}) {
+  leftWidth ??= _leftPaneWidth(totalWidth);
   const dividerCount = 2;
   final reservedWidth =
       leftWidth + (dividerCount * _paneResizeHandleWidth) + _minCenterPaneWidth;
   final availableWidth = totalWidth - reservedWidth;
   return availableWidth.clamp(0.0, double.infinity);
+}
+
+/// Widest the session list may become while the center pane keeps its
+/// minimum width and an open tool pane keeps its minimum width.
+double _maxLeftPaneWidth({
+  required double totalWidth,
+  required bool rightPaneVisible,
+}) {
+  final dividerCount = rightPaneVisible ? 2 : 1;
+  final reservedWidth =
+      (rightPaneVisible ? _minRightPaneWidth : 0.0) +
+      (dividerCount * _paneResizeHandleWidth) +
+      _minCenterPaneWidth;
+  final availableWidth = totalWidth - reservedWidth;
+  return availableWidth < _minLeftPaneWidth ? _minLeftPaneWidth : availableWidth;
 }
 
 double _minAllowedRightPaneWidth(double maxWidth) {
@@ -218,6 +237,10 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
   StreamSubscription<String>? _stoppedSessionSub;
   StreamSubscription<WorkspaceNavigationState>? _navigationSub;
   double? _rightPaneUserWidth;
+  /// User-chosen session list width (persisted); null means the default for
+  /// the window size.
+  double? _leftPaneUserWidth;
+  Timer? _leftPaneWidthSaveTimer;
   final ValueNotifier<int> _presentationVersion = ValueNotifier<int>(0);
 
   WorkspaceNavigationState get _state => _navigation.state;
@@ -290,6 +313,54 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
       setState(() {});
       _notifyPresentationChanged();
     });
+    _restoreLeftPaneWidth();
+  }
+
+  Future<void> _restoreLeftPaneWidth() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getDouble(_leftPaneWidthPrefKey);
+      if (saved == null || !mounted || _leftPaneUserWidth != null) return;
+      setState(() => _leftPaneUserWidth = saved);
+    } catch (_) {
+      // Preferences are a convenience; the default width still works.
+    }
+  }
+
+  void _scheduleLeftPaneWidthSave(double width) {
+    _leftPaneWidthSaveTimer?.cancel();
+    _leftPaneWidthSaveTimer = Timer(const Duration(milliseconds: 400), () async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setDouble(_leftPaneWidthPrefKey, width);
+      } catch (_) {
+        // Ignore storage failures; the width stays for this session.
+      }
+    });
+  }
+
+  /// Session list width in logical pixels for the current window width.
+  double _currentLeftPaneWidth(double usableWidth) {
+    final user = _leftPaneUserWidth;
+    if (user == null) return _leftPaneWidth(usableWidth);
+    final maxWidth = _maxLeftPaneWidth(
+      totalWidth: usableWidth,
+      rightPaneVisible: _toolPane != null,
+    );
+    return user.clamp(_minLeftPaneWidth, maxWidth).toDouble();
+  }
+
+  /// Resize the session list pane (drag handle or keyboard); the center pane
+  /// keeps at least [_minCenterPaneWidth] and an open tool pane its minimum.
+  void resizeLeftPane(double nextWidth, double totalWidth) {
+    final maxWidth = _maxLeftPaneWidth(
+      totalWidth: totalWidth,
+      rightPaneVisible: _toolPane != null,
+    );
+    final clamped = nextWidth.clamp(_minLeftPaneWidth, maxWidth).toDouble();
+    if (clamped == _leftPaneUserWidth) return;
+    setState(() => _leftPaneUserWidth = clamped);
+    _scheduleLeftPaneWidthSave(clamped);
   }
 
   @override
@@ -607,6 +678,7 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
     NotificationService.instance.clearActiveSession(owner: this);
     _stoppedSessionSub?.cancel();
     _navigationSub?.cancel();
+    _leftPaneWidthSaveTimer?.cancel();
     _navigation.close();
     if (_homeRouteIdentity case final identity?) {
       SessionRouteRegistry.instance.unregisterWorkspace(identity, this);
@@ -658,10 +730,14 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
           final toolActive =
               showRightPane &&
               (!compact || !hasCenter || !_state.centerInFront);
+          final leftContentWidth = _currentLeftPaneWidth(usableWidth);
           final leftWidth = compact
               ? constraints.maxWidth
-              : padding.left + _leftPaneWidth(usableWidth);
-          final maxRightWidth = _maxRightPaneWidth(totalWidth: usableWidth);
+              : padding.left + leftContentWidth;
+          final maxRightWidth = _maxRightPaneWidth(
+            totalWidth: usableWidth,
+            leftWidth: leftContentWidth,
+          );
           final rightWidth = compact
               ? constraints.maxWidth
               : padding.right +
@@ -850,6 +926,26 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
                 if (_state.centerInFront) tool,
                 center,
                 if (!_state.centerInFront) tool,
+                if (!compact)
+                  Positioned(
+                    key: const ValueKey('workspace_left_resize_handle'),
+                    top: 0,
+                    bottom: 0,
+                    left:
+                        leftWidth -
+                        ((resizeHandleHitWidth - _twoPaneDividerWidth) / 2),
+                    width: resizeHandleHitWidth,
+                    child: _WorkspaceResizeHandle(
+                      label: 'Resize session list',
+                      color: Theme.of(context).dividerColor
+                          .withValues(alpha: 0.18),
+                      // Dragging right widens the list: positive delta grows it.
+                      onDragUpdate: (delta) => resizeLeftPane(
+                        leftWidth - padding.left + delta,
+                        usableWidth,
+                      ),
+                    ),
+                  ),
                 if (!compact && showRightPane)
                   Positioned(
                     top: 0,
@@ -931,10 +1027,12 @@ class _WorkspacePaneDivider extends StatelessWidget {
 class _WorkspaceResizeHandle extends StatefulWidget {
   final Color color;
   final ValueChanged<double> onDragUpdate;
+  final String label;
 
   const _WorkspaceResizeHandle({
     required this.color,
     required this.onDragUpdate,
+    this.label = 'Resize right pane',
   });
 
   @override
@@ -957,7 +1055,7 @@ class _WorkspaceResizeHandleState extends State<_WorkspaceResizeHandle> {
     return MouseRegion(
       cursor: SystemMouseCursors.resizeColumn,
       child: Semantics(
-        label: 'Resize right pane',
+        label: widget.label,
         hint: 'Drag horizontally to resize',
         enabled: true,
         onIncrease: () => widget.onDragUpdate(-48),

@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import { basename, extname, join } from "node:path";
 import { homedir } from "node:os";
 import { renameSession as renameClaudeSdkSession } from "@anthropic-ai/claude-agent-sdk";
+import { knownSessions } from "./known-sessions.js";
 import { isAutoRenamePromptText } from "./auto-rename.js";
 import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
 import { createRepositoryRootResolver } from "./repository-root.js";
@@ -26,6 +27,8 @@ export interface SessionIndexEntry {
   resumeCwd?: string;
   /** Permission mode from the first user message (Claude sessions only). */
   permissionMode?: string;
+  /** Claude Code entrypoint recorded in the transcript ("cli", "sdk-cli", ...). */
+  entrypoint?: string;
   isSidechain: boolean;
   codexSettings?: {
     profile?: string;
@@ -69,6 +72,15 @@ export interface GetRecentSessionsOptions {
   sessionId?: string;
   /** Session IDs to exclude (archived sessions). */
   archivedSessionIds?: ReadonlySet<string>;
+  /**
+   * Hide headless Claude sessions (`claude -p`, cron jobs, other SDK users:
+   * transcript entrypoint `sdk-*`) that this bridge did not create or resume.
+   * Defaults to true unless BRIDGE_SHOW_HEADLESS_SESSIONS=1. Exact
+   * `sessionId` lookups are never filtered.
+   */
+  hideHeadless?: boolean;
+  /** Session ids the bridge itself drives; defaults to the known-sessions store. */
+  knownSessionIds?: ReadonlySet<string>;
   /** Filter by provider (claude or codex). */
   provider?: "claude" | "codex";
   /** Show only sessions with a non-empty name. */
@@ -328,6 +340,7 @@ const RE_TIMESTAMP = /"timestamp"\s*:\s*"([^"]+)"/;
 const RE_GIT_BRANCH = /"gitBranch"\s*:\s*"([^"]+)"/;
 const RE_CWD = /"cwd"\s*:\s*"([^"]+)"/;
 const RE_IS_SIDECHAIN = /"isSidechain"\s*:\s*true/;
+const RE_ENTRYPOINT = /"entrypoint"\s*:\s*"([a-zA-Z0-9_-]+)"/;
 const RE_PERMISSION_MODE = /"permissionMode"\s*:\s*"([^"]+)"/;
 const RE_TYPE_CUSTOM_TITLE = /"type"\s*:\s*"custom-title"/;
 const RE_CUSTOM_TITLE = /"customTitle"\s*:\s*"([^"]*)"/;
@@ -437,6 +450,7 @@ function parseFromChunks(
   let customTitle = "";
   let permissionMode = "";
   let isSidechain = false;
+  let entrypoint = "";
   let hasAnyMessage = false;
   let headFoundFirstPrompt = false;
   let headFoundProjectPath = false;
@@ -485,6 +499,11 @@ function parseFromChunks(
 
     if (!isSidechain && RE_IS_SIDECHAIN.test(line)) {
       isSidechain = true;
+    }
+
+    if (!entrypoint) {
+      const epMatch = line.match(RE_ENTRYPOINT);
+      if (epMatch) entrypoint = epMatch[1];
     }
 
     if (isUser && !permissionMode) {
@@ -630,6 +649,7 @@ function parseFromChunks(
       projectPath,
       ...(rawCwd && rawCwd !== projectPath ? { resumeCwd: rawCwd } : {}),
       ...(permissionMode ? { permissionMode } : {}),
+      ...(entrypoint ? { entrypoint } : {}),
       isSidechain,
     },
     headFoundFirstPrompt,
@@ -774,6 +794,7 @@ async function hydrateClaudeIndexedEntry(
     isSidechain: base.isSidechain || parsed.isSidechain,
     ...(base.lastPrompt || !parsed.lastPrompt ? {} : { lastPrompt: parsed.lastPrompt }),
     ...(base.permissionMode || !parsed.permissionMode ? {} : { permissionMode: parsed.permissionMode }),
+    ...(parsed.entrypoint ? { entrypoint: parsed.entrypoint } : {}),
   };
 }
 
@@ -974,6 +995,15 @@ export async function scanJsonlDir(
   );
 
   return results.filter((e): e is SessionIndexEntry => e !== null);
+}
+
+/** True for Claude transcripts written by `claude -p` / SDK hosts. */
+export function isHeadlessSessionEntry(entry: SessionIndexEntry): boolean {
+  return (
+    entry.provider === "claude" &&
+    typeof entry.entrypoint === "string" &&
+    entry.entrypoint.startsWith("sdk-")
+  );
 }
 
 export async function getAllRecentSessions(
@@ -1182,6 +1212,16 @@ export async function getAllRecentSessions(
     : [...entries];
   perfStats.counts.beforeArchive = entries.length;
   perfStats.counts.afterArchive = filtered.length;
+
+  // Hide headless sessions the bridge does not own (see hideHeadless).
+  const hideHeadless =
+    options.hideHeadless ?? process.env.BRIDGE_SHOW_HEADLESS_SESSIONS !== "1";
+  if (hideHeadless && !options.sessionId) {
+    const known = options.knownSessionIds ?? knownSessions.all();
+    filtered = filtered.filter(
+      (e) => !isHeadlessSessionEntry(e) || known.has(e.sessionId),
+    );
+  }
 
   // Apply the same repository filter to both providers after grouping.
   if (normalizedFilterPath) {

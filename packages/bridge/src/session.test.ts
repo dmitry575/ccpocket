@@ -113,6 +113,10 @@ vi.mock("./codex-process.js", () => ({
   },
 }));
 
+vi.mock("./known-sessions.js", () => ({
+  knownSessions: { markKnown: vi.fn(), has: () => false, all: () => new Set<string>() },
+}));
+
 vi.mock("./sdk-process.js", () => ({
   SdkProcess: class MockSdkProcess extends EventEmitter {
     public permissionMode = "default";

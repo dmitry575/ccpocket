@@ -2105,6 +2105,58 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('session list pane can be widened by the user and remembers it', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1400, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    SharedPreferences.setMockInitialValues({});
+    final bridge = _MockBridgeService();
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+    final shellKey = GlobalKey<WorkspaceShellScreenState>();
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+        debugRecentSessions: [_recentSession('one')],
+        shellKey: shellKey,
+        platform: TargetPlatform.windows,
+      ),
+    );
+    await _pumpUi(tester);
+    final list = find.byKey(const ValueKey('workspace_list_slot'));
+    expect(tester.getSize(list).width, 360);
+    expect(find.byKey(const ValueKey('workspace_left_resize_handle')), findsOneWidget);
+
+    // Drag the handle to the right: the list grows by the same amount.
+    await tester.drag(
+      find.byKey(const ValueKey('workspace_left_resize_handle')),
+      const Offset(120, 0),
+    );
+    await _pumpUi(tester);
+    expect(tester.getSize(list).width, 480);
+
+    // Programmatic resize clamps to the minimum and to what the center pane leaves free.
+    shellKey.currentState!.resizeLeftPane(50, 1400);
+    await _pumpUi(tester);
+    expect(tester.getSize(list).width, 220);
+    shellKey.currentState!.resizeLeftPane(5000, 1400);
+    await _pumpUi(tester);
+    expect(tester.getSize(list).width, 1400 - 360 - 1);
+
+    // The chosen width is persisted for the next launch.
+    await tester.pump(const Duration(milliseconds: 500));
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getDouble('workspace_left_pane_width'), 1400 - 360 - 1);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('opens session gallery in right pane', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1400, 900));
     addTearDown(() => tester.binding.setSurfaceSize(null));
