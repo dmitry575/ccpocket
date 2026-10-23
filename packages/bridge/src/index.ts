@@ -249,6 +249,7 @@ export async function startServer() {
           ? {
               sessions: wsServer?.sessionCount ?? 0,
               clients: wsServer?.clientCount ?? 0,
+              busy: wsServer?.busySessions ?? [],
             }
           : {}),
       });

@@ -979,6 +979,31 @@ describe("SessionManager codex path", () => {
     manager.destroyAll();
   });
 
+  it("reports running sessions and idle ones with background tasks as busy", () => {
+    const manager = new SessionManager(() => {});
+    try {
+      const runningId = manager.create("/tmp/busy-running");
+      const bgId = manager.create("/tmp/busy-bg");
+      const idleId = manager.create("/tmp/busy-idle");
+      const [runningProc, bgProc, idleProc] = sdkInstances.slice(-3);
+      runningProc.emit("status", "running" satisfies ProcessStatus);
+      bgProc.hasBackgroundWork.mockReturnValue(true);
+      bgProc.emit("status", "idle" satisfies ProcessStatus);
+      idleProc.emit("status", "idle" satisfies ProcessStatus);
+
+      const busy = manager.busySessions();
+      expect(busy.map((s) => s.id).sort()).toEqual([runningId, bgId].sort());
+      expect(busy.find((s) => s.id === bgId)).toMatchObject({
+        status: "idle",
+        backgroundWork: true,
+        projectPath: "/tmp/busy-bg",
+      });
+      expect(busy.some((s) => s.id === idleId)).toBe(false);
+    } finally {
+      manager.destroyAll();
+    }
+  });
+
   it("does not evict an idle Claude session that still has background tasks", () => {
     vi.useFakeTimers();
     vi.stubEnv("BRIDGE_IDLE_SESSION_TTL_MINUTES", "1");

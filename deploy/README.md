@@ -38,6 +38,17 @@ cd /root/ccpocket && git fetch origin && git checkout worktree-windows-installer
   && bash deploy/install.sh
 ```
 
+### Перезапуск без потери работы
+
+Сессии Claude работают дочерними процессами моста, поэтому `systemctl restart ccpocket-bridge` обрывает все идущие ходы и фоновых субагентов, и продолжить их уже нельзя. Для обычных обновлений перезапускайте так:
+
+```bash
+bash deploy/restart-when-idle.sh                 # ждёт, пока ни одна сессия не занята
+bash deploy/restart-when-idle.sh --max-wait 1800 # не дольше 30 минут, иначе выходит без перезапуска
+```
+
+Скрипт берёт ключ из `/etc/ccpocket-bridge.env` и опрашивает `/health`: поле `busy` перечисляет сессии с идущим ходом, ожидающим разрешением или фоновыми задачами (субагенты, фоновые команды). Перезапуск происходит, когда список пуст две проверки подряд. Мост без этого поля (сборка старше 23.10.2026) скрипт не перезапускает без `--force`.
+
 `install.sh` не трогает существующий `/etc/ccpocket-bridge.env`. Новые переменные (`BRIDGE_MAX_IDLE_SESSIONS=3`, `BRIDGE_MAX_LIVE_SESSIONS=5`) допишите в него руками, если файл создан раньше.
 
 После выкладки версии с авторизацией HTTP-маршрутов галерею в nginx можно открыть обратно (убрать строку `location /api/gallery { return 403; }` в `/etc/nginx/sites-available/ccpocket-bridge`): мост сам требует ключ. `/usage` и `/doctor` лучше оставить закрытыми, клиент ими не пользуется.

@@ -2723,6 +2723,11 @@ export class BridgeWebSocketServer {
     return this.sessionManager.list().length;
   }
 
+  /** Fork: sessions a restart would interrupt (see SessionManager.busySessions). */
+  get busySessions() {
+    return this.sessionManager.busySessions();
+  }
+
   /** Return connected WebSocket client count. */
   get clientCount(): number {
     return this.wss.clients.size;

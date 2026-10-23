@@ -1943,6 +1943,33 @@ export class SessionManager {
   }
 
   /**
+   * Fork: sessions a bridge restart would cut off (a turn in flight, a
+   * pending permission, background tasks such as subagents). The safe
+   * restart (`deploy/restart-when-idle.sh`) waits until this is empty.
+   */
+  busySessions(): Array<{
+    id: string;
+    claudeSessionId?: string;
+    name?: string;
+    projectPath: string;
+    status: ProcessStatus;
+    backgroundWork: boolean;
+  }> {
+    const idle = new Set(this.evictableIdleSessions());
+    return Array.from(this.sessions.values())
+      .filter((session) => !idle.has(session))
+      .map((session) => ({
+        id: session.id,
+        claudeSessionId: session.claudeSessionId,
+        name: session.name,
+        projectPath: session.projectPath,
+        status: session.status,
+        backgroundWork:
+          session.process instanceof SdkProcess && session.process.hasBackgroundWork(),
+      }));
+  }
+
+  /**
    * Idle sessions that may be stopped without losing work, oldest first:
    * nothing queued, no pending permission, no Codex recovery waiting, and no
    * Claude background task that would wake the session up later.

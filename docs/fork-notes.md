@@ -23,6 +23,8 @@ kept small and local.
 | Push | `BRIDGE_FIREBASE_API_KEY`, `BRIDGE_PUSH_RELAY_URL` | Point the relay at your own Firebase project instead of upstream's. |
 | Session list | headless transcripts (`entrypoint` `sdk-*`: `claude -p`, cron jobs, other SDK hosts) are hidden unless the bridge created/resumed them (`~/.ccpocket/known-sessions.json`); `BRIDGE_SHOW_HEADLESS_SESSIONS=1` shows all | The owner runs many unattended `claude -p` writers that drowned the list. |
 | Desktop layout | the session list pane has a drag handle (260px minimum, center pane keeps 360); width persisted in SharedPreferences | Requested for desktop-first use. |
+| Subagent viewer | `GET /api/subagent?session=&toolUseId=|agentId=` (key required) reads `<session>/subagents/agent-<id>.jsonl` + `.meta.json`; Agent/Task cards get an "Open" button with a polling transcript screen | Upstream only shows a summary of subagent tool calls. |
+| Safe restart | authorized `/health` lists `busy` sessions (turn in flight, pending permission, background tasks); `deploy/restart-when-idle.sh` restarts only when that list stays empty | Sessions are child processes of the bridge; a plain restart kills running turns and background subagents. |
 | Deploy | `deploy/` (systemd unit, nginx TLS proxy, install script), fork-only Windows installer and all-platforms release workflows | See `deploy/README.md`. |
 
 ## Deliberately not changed
