@@ -2577,32 +2577,32 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
-  it("refuses to resume a session held by another claude process unless forking", async () => {
+  it("opens a fork when the session is held by another claude process", async () => {
     getSessionHistoryMock.mockResolvedValue([]);
     findExternalSessionHolderMock.mockResolvedValueOnce({ kind: "background", pid: 77, description: 'claude --bg session "job" (pid 77)' });
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const manager = (bridge as any).sessionManager;
+    const createSpy = vi.spyOn(manager, "create");
     const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
 
     await (bridge as any).handleClientMessage(
       { type: "resume_session", sessionId: "claude-held-1", projectPath: "/tmp/project-a", resumeRequestId: "req-held" },
       ws,
     );
-    await vi.waitFor(() => {
-      const sends = ws.send.mock.calls.map((c: unknown[]) => JSON.parse(c[0] as string));
-      expect(sends).toContainEqual(
-        expect.objectContaining({ type: "error", errorCode: "session_held_externally", requestId: "req-held" }),
-      );
-    });
-    expect(manager.list()).toHaveLength(0);
+    await vi.waitFor(() => expect(manager.list().length).toBe(1));
+    expect(createSpy.mock.calls[0]?.[1]?.forkSession).toBe(true);
+    const sends = ws.send.mock.calls.map((c: unknown[]) => JSON.parse(c[0] as string));
+    expect(sends).toContainEqual(
+      expect.objectContaining({ type: "error", errorCode: "session_forked_from_held" }),
+    );
 
-    // With forkSession the holder is not even consulted.
+    // With forkSession requested explicitly the holder is not even consulted.
     findExternalSessionHolderMock.mockClear();
     await (bridge as any).handleClientMessage(
-      { type: "resume_session", sessionId: "claude-held-1", projectPath: "/tmp/project-a", forkSession: true },
+      { type: "resume_session", sessionId: "claude-held-2", projectPath: "/tmp/project-a", forkSession: true },
       ws,
     );
-    await vi.waitFor(() => expect(manager.list().length).toBe(1));
+    await vi.waitFor(() => expect(manager.list().length).toBe(2));
     expect(findExternalSessionHolderMock).not.toHaveBeenCalled();
     bridge.close();
   });

@@ -679,7 +679,8 @@ class HomeContentState extends State<HomeContent> {
         return ListView(
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(12),
+          // Leave room for the floating "New" button so the last row (Show more) stays clickable.
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
           children: [
             if (isReconnecting) const SessionReconnectBanner(),
             ?connectedBridgeBanner,
@@ -725,7 +726,8 @@ class HomeContentState extends State<HomeContent> {
       key: const ValueKey('session_list'),
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.all(12),
+      // Leave room for the floating "New" button so the last row (Show more) stays clickable.
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
       children: [
         if (isReconnecting) const SessionReconnectBanner(),
         ?connectedBridgeBanner,

@@ -12,6 +12,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { authenticateRequest } from "./auth.js";
 import type { DeviceTokenStore } from "./device-tokens.js";
 import { findExternalSessionHolder } from "./session-holders.js";
+import { sessionNames } from "./session-names.js";
 import { textPreview } from "./text-preview.js";
 import { consumeFinderProof, verifyFinderSocketProof, revealInFinder } from "./finder-reveal.js";
 import {
@@ -5913,22 +5914,28 @@ export class BridgeWebSocketServer {
             // the user fork instead (the SDK refuses background sessions
             // anyway). Checked here, after the resume operation is
             // registered, so concurrent resume requests still coalesce.
-            const holder =
-              msg.forkSession === true
-                ? null
-                : await findExternalSessionHolder(claudeSessionId);
+            let forkSession = msg.forkSession === true;
+            const holder = forkSession
+              ? null
+              : await findExternalSessionHolder(claudeSessionId);
             if (holder) {
+              // The Agent SDK cannot attach to a session another process
+              // drives (background sessions fail with
+              // session_held_by_background), so open a copy: the full
+              // history is there and the conversation can go on, while the
+              // original keeps running untouched. The client is told so.
               console.log(
-                `[ws] resume_session: ${claudeSessionId} is held by ${holder.description}; refusing`,
+                `[ws] resume_session: ${claudeSessionId} is held by ${holder.description}; opening a fork instead`,
               );
-              this.failResumeOperation(
-                resumeOperation.key,
-                resumeOperation.operationId,
-                `This Claude session is already open elsewhere (${holder.description}). ` +
-                  'Close it there, or enable "Fork session on resume" to continue in a copy.',
-                "session_held_externally",
-              );
-              return;
+              forkSession = true;
+              this.send(ws, {
+                type: "error",
+                sessionId: claudeSessionId,
+                errorCode: "session_forked_from_held",
+                message:
+                  `This session is still running elsewhere (${holder.description}), ` +
+                  "so a copy was opened. Messages sent here go to the copy only.",
+              });
             }
             historyLoadMs = Date.now() - historyStartedAt;
             historyLoaded = true;
@@ -5950,7 +5957,7 @@ export class BridgeWebSocketServer {
                 maxTurns: msg.maxTurns,
                 maxBudgetUsd: msg.maxBudgetUsd,
                 fallbackModel: msg.fallbackModel,
-                forkSession: msg.forkSession,
+                forkSession,
                 persistSession: msg.persistSession,
                 ...(msg.sandboxMode
                   ? { sandboxEnabled: msg.sandboxMode === "on" }
@@ -8456,6 +8463,7 @@ export class BridgeWebSocketServer {
         runningSession.provider === "claude" &&
         runningSession.claudeSessionId
       ) {
+        sessionNames.set(runningSession.claudeSessionId, name);
         await renameClaudeSession(
           runningSession.worktreePath ?? runningSession.projectPath,
           runningSession.claudeSessionId,
@@ -8486,6 +8494,7 @@ export class BridgeWebSocketServer {
     const projectPath = renameMsg.projectPath;
 
     if (provider === "claude" && providerSessionId && projectPath) {
+      sessionNames.set(providerSessionId, name);
       const success = await renameClaudeSession(
         projectPath,
         providerSessionId,

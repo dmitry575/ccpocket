@@ -5,6 +5,7 @@ import { basename, extname, join } from "node:path";
 import { homedir } from "node:os";
 import { renameSession as renameClaudeSdkSession } from "@anthropic-ai/claude-agent-sdk";
 import { knownSessions } from "./known-sessions.js";
+import { sessionNames } from "./session-names.js";
 import { isAutoRenamePromptText } from "./auto-rename.js";
 import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
 import { createRepositoryRootResolver } from "./repository-root.js";
@@ -359,10 +360,24 @@ const RE_CODEX_PARTIAL_OUTPUT_TEXT =
  * captures, team notifications, skill loading).
  */
 const RE_SYSTEM_INJECTED =
-  /^<(?:local-command-caveat|local-command-std(?:err|out)|task-notification|teammate-message|bash-(?:input|stdout))>/;
+  /^<(?:local-command-caveat|local-command-std(?:err|out)|task-notification|teammate-message|bash-(?:input|stdout)|agent-message|system-reminder)\b/;
+
+/** Harness-injected user turns (subagent hand-backs, job notifications, resume notes). */
+const SYSTEM_INJECTED_PREFIXES = [
+  "Base directory for this skill:",
+  "Another Claude session sent a message",
+  "[Subagent hand-back]",
+  "[SYSTEM NOTIFICATION",
+  "This session is being continued from",
+  "Caveat: The messages below were generated",
+];
 
 function isSystemInjectedText(text: string): boolean {
-  return RE_SYSTEM_INJECTED.test(text) || text.startsWith("Base directory for this skill:");
+  const trimmed = text.trimStart();
+  return (
+    RE_SYSTEM_INJECTED.test(trimmed) ||
+    SYSTEM_INJECTED_PREFIXES.some((prefix) => trimmed.startsWith(prefix))
+  );
 }
 
 function isCodexAutoRenameSession(firstPrompt: string): boolean {
@@ -1234,6 +1249,16 @@ export async function getAllRecentSessions(
     : [...entries];
   perfStats.counts.beforeArchive = entries.length;
   perfStats.counts.afterArchive = filtered.length;
+
+  // Names the user set from the app win over titles a running CLI rewrites.
+  const userNames = sessionNames.all();
+  if (userNames.size > 0) {
+    for (const e of filtered) {
+      if (e.provider !== "claude") continue;
+      const userName = userNames.get(e.sessionId);
+      if (userName) e.name = userName;
+    }
+  }
 
   // Hide headless sessions the bridge does not own (see hideHeadless).
   const hideHeadless =
