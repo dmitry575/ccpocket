@@ -63,6 +63,7 @@ class ReleaseErrorWidget extends LeafRenderObjectWidget {
     final detail = this.detail;
     return _RenderReleaseErrorBox(
       detail == null || detail.isEmpty ? message : '$message\n$detail',
+      semanticsLabel: message,
     );
   }
 
@@ -74,17 +75,22 @@ class ReleaseErrorWidget extends LeafRenderObjectWidget {
 }
 
 class _RenderReleaseErrorBox extends RenderErrorBox {
-  _RenderReleaseErrorBox(super.message);
+  _RenderReleaseErrorBox(super.message, {required this.semanticsLabel});
+
+  /// Generic localized message for accessibility services; the painted text
+  /// may additionally carry the failure detail.
+  final String semanticsLabel;
 
   /// Upstream's RenderErrorBox takes the biggest size allowed; inside a
   /// scrollable that is ~100k pixels of grey that scrolls forever. Keep the
-  /// box to a readable strip instead.
+  /// box to a readable strip instead. RenderErrorBox is sized by its parent,
+  /// so the size comes from computeDryLayout, not performLayout.
   static const double _maxHeight = 160;
   static const double _fallbackWidth = 400;
 
   @override
-  void performLayout() {
-    size = constraints.constrain(
+  Size computeDryLayout(BoxConstraints constraints) {
+    return constraints.constrain(
       Size(
         constraints.hasBoundedWidth ? constraints.maxWidth : _fallbackWidth,
         _maxHeight,
@@ -97,7 +103,7 @@ class _RenderReleaseErrorBox extends RenderErrorBox {
     super.describeSemanticsConfiguration(config);
     config
       ..isSemanticBoundary = true
-      ..label = message
+      ..label = semanticsLabel
       ..textDirection = TextDirection.ltr;
   }
 }
