@@ -4656,6 +4656,7 @@ class BridgeService implements BridgeServiceBase {
     required String session,
     String? toolUseId,
     String? agentId,
+    int? after,
   }) async {
     final baseUrl = httpBaseUrl;
     if (baseUrl == null) return (status: 0, body: null);
@@ -4666,6 +4667,7 @@ class BridgeService implements BridgeServiceBase {
           'session': session,
           'toolUseId': ?toolUseId,
           'agentId': ?agentId,
+          if (after != null) 'after': '$after',
         },
       );
       final response = await http
@@ -4681,6 +4683,37 @@ class BridgeService implements BridgeServiceBase {
       );
     } catch (_) {
       return (status: 0, body: null);
+    }
+  }
+
+  /// Fork: subagents of a session with their state (`GET /api/subagents`),
+  /// newest first. Status 404 means the bridge predates the route.
+  Future<({int status, List<Map<String, dynamic>> agents})> fetchSubagents(
+    String session,
+  ) async {
+    final baseUrl = httpBaseUrl;
+    if (baseUrl == null) return (status: 0, agents: <Map<String, dynamic>>[]);
+
+    try {
+      final uri = Uri.parse(
+        '$baseUrl/api/subagents',
+      ).replace(queryParameters: {'session': session});
+      final response = await http
+          .get(uri, headers: _bridgeAuthHeaders)
+          .timeout(const Duration(seconds: 15));
+      if (response.statusCode != 200) {
+        return (
+          status: response.statusCode,
+          agents: <Map<String, dynamic>>[],
+        );
+      }
+      final json = jsonDecode(utf8.decode(response.bodyBytes));
+      final agents = json is Map<String, dynamic> && json['agents'] is List
+          ? (json['agents'] as List).whereType<Map<String, dynamic>>().toList()
+          : <Map<String, dynamic>>[];
+      return (status: 200, agents: agents);
+    } catch (_) {
+      return (status: 0, agents: <Map<String, dynamic>>[]);
     }
   }
 

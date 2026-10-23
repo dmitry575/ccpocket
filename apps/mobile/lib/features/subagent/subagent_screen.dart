@@ -11,11 +11,12 @@ import '../../theme/app_theme.dart';
 import '../../theme/markdown_style.dart';
 import '../../utils/tool_categories.dart';
 
-/// Fork: read-only view of a subagent's transcript (Agent/Task tool).
+/// Fork: live view of a subagent's transcript (Agent/Task tool), like the
+/// subagent view of the Claude Code CLI.
 ///
-/// The bridge reads `<session>/subagents/agent-<id>.jsonl` and serves it on
-/// `GET /api/subagent`; the screen polls it while open, faster while the
-/// transcript keeps growing.
+/// The bridge serves `<session>/subagents/agent-<id>.jsonl` on
+/// `GET /api/subagent`; the screen asks for new entries only (`after`) every
+/// second while the subagent runs and every few seconds once it stopped.
 class SubagentScreen extends StatefulWidget {
   /// Bridge or Claude session id of the parent session.
   final String sessionId;
@@ -57,19 +58,20 @@ class SubagentScreen extends StatefulWidget {
 }
 
 class _SubagentScreenState extends State<SubagentScreen> {
-  static const _fastPoll = Duration(seconds: 3);
-  static const _slowPoll = Duration(seconds: 15);
+  static const _livePoll = Duration(seconds: 1);
+  static const _idlePoll = Duration(seconds: 8);
 
   final _scroll = ScrollController();
-  Timer? _timer;
+  Timer? _poll;
+  Timer? _clock;
   bool _loading = true;
   bool _inFlight = false;
   int _status = 0;
   Map<String, dynamic>? _agent;
   List<Map<String, dynamic>> _siblings = const [];
-  List<Map<String, dynamic>> _entries = const [];
+  final List<Map<String, dynamic>> _entries = [];
+  int _total = 0;
   bool _truncated = false;
-  int _unchangedPolls = 0;
   String? _agentId;
 
   @override
@@ -77,35 +79,52 @@ class _SubagentScreenState extends State<SubagentScreen> {
     super.initState();
     _agentId = widget.agentId;
     _load();
+    // Re-render "updated Ns ago" in the activity line.
+    _clock = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && _state == 'running') setState(() {});
+    });
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _poll?.cancel();
+    _clock?.cancel();
     _scroll.dispose();
     super.dispose();
   }
 
-  Future<void> _load() async {
+  String? get _state => _agent?['state'] as String?;
+
+  Future<void> _load({bool full = false}) async {
     if (_inFlight) return;
     _inFlight = true;
-    _timer?.cancel();
+    _poll?.cancel();
     final bridge = context.read<BridgeService>();
+    final incremental = !full && _total > 0;
     final result = await bridge.fetchSubagentHistory(
       session: widget.sessionId,
       toolUseId: _agentId == null ? widget.toolUseId : null,
       agentId: _agentId,
+      after: incremental ? _total : null,
     );
     _inFlight = false;
     if (!mounted) return;
 
     final body = result.body;
-    final entries = (body?['entries'] as List?)
+    final total = (body?['total'] as num?)?.toInt();
+    if (incremental && total != null && total < _total) {
+      // Transcript was rewritten (e.g. compacted): start over.
+      _total = 0;
+      _load(full: true);
+      return;
+    }
+    final fresh =
+        (body?['entries'] as List?)
             ?.whereType<Map<String, dynamic>>()
             .toList() ??
         const <Map<String, dynamic>>[];
-    final grew = entries.length != _entries.length;
-    final wasAtBottom = !_scroll.hasClients ||
+    final wasAtBottom =
+        !_scroll.hasClients ||
         _scroll.position.pixels >= _scroll.position.maxScrollExtent - 48;
 
     setState(() {
@@ -114,38 +133,40 @@ class _SubagentScreenState extends State<SubagentScreen> {
       if (body != null) {
         _agent = body['agent'] as Map<String, dynamic>?;
         _agentId ??= _agent?['agentId'] as String?;
-        _siblings = (body['siblings'] as List?)
+        _siblings =
+            (body['siblings'] as List?)
                 ?.whereType<Map<String, dynamic>>()
                 .toList() ??
             const [];
-        _entries = entries;
-        _truncated = body['truncated'] == true;
+        if (!incremental) {
+          _entries.clear();
+          _truncated = body['truncated'] == true;
+        }
+        _entries.addAll(fresh);
+        _total = total ?? _entries.length;
       }
-      _unchangedPolls = grew ? 0 : _unchangedPolls + 1;
     });
 
-    if (grew && wasAtBottom) {
+    if (fresh.isNotEmpty && wasAtBottom) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_scroll.hasClients) {
           _scroll.jumpTo(_scroll.position.maxScrollExtent);
         }
       });
     }
-    // Poll fast while the transcript grows (or does not exist yet), then
-    // back off once it has been quiet for ~30 s.
-    final delay = _unchangedPolls > 10 ? _slowPoll : _fastPoll;
-    _timer = Timer(delay, _load);
+    final live = _state == 'running' || result.status == 404;
+    _poll = Timer(live ? _livePoll : _idlePoll, _load);
   }
 
   void _switchTo(String agentId) {
     setState(() {
       _agentId = agentId;
       _agent = null;
-      _entries = const [];
+      _entries.clear();
+      _total = 0;
       _loading = true;
-      _unchangedPolls = 0;
     });
-    _load();
+    _load(full: true);
   }
 
   String get _title {
@@ -167,11 +188,29 @@ class _SubagentScreenState extends State<SubagentScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(_title, overflow: TextOverflow.ellipsis),
-            if (type != null && type.isNotEmpty)
-              Text(
-                type,
-                style: TextStyle(fontSize: 12, color: appColors.subtleText),
-              ),
+            Row(
+              children: [
+                if (_state != null) ...[
+                  SubagentStateDot(state: _state!),
+                  const SizedBox(width: 6),
+                  Text(
+                    subagentStateLabel(_state!),
+                    style: TextStyle(fontSize: 12, color: appColors.subtleText),
+                  ),
+                ],
+                if (type != null && type.isNotEmpty)
+                  Flexible(
+                    child: Text(
+                      '${_state != null ? '  ·  ' : ''}$type',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: appColors.subtleText,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ],
         ),
         actions: [
@@ -185,27 +224,99 @@ class _SubagentScreenState extends State<SubagentScreen> {
                   if (s['agentId'] is String)
                     PopupMenuItem(
                       value: s['agentId'] as String,
-                      child: Text(
-                        (s['description'] as String?)?.isNotEmpty == true
-                            ? s['description'] as String
-                            : (s['agentType'] as String?) ??
-                                  s['agentId'] as String,
-                        overflow: TextOverflow.ellipsis,
+                      child: Row(
+                        children: [
+                          SubagentStateDot(
+                            state: s['state'] as String? ?? 'done',
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              subagentTitle(s),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
               ],
             ),
-          IconButton(
-            tooltip: 'Refresh',
-            icon: const Icon(Icons.refresh),
-            onPressed: () {
-              _unchangedPolls = 0;
-              _load();
-            },
-          ),
         ],
       ),
-      body: _buildBody(appColors),
+      body: Column(
+        children: [
+          Expanded(child: _buildBody(appColors)),
+          if (_state == 'running') _buildActivityLine(appColors),
+        ],
+      ),
+    );
+  }
+
+  /// Terminal-like "✻ Running Bash · updated 3s ago" line.
+  Widget _buildActivityLine(AppColors appColors) {
+    final answered = <String>{
+      for (final e in _entries)
+        if (e['kind'] == 'tool_result') e['toolUseId'] as String? ?? '',
+    };
+    Map<String, dynamic>? pending;
+    for (final e in _entries.reversed) {
+      if (e['kind'] == 'tool_use') {
+        if (!answered.contains(e['id'])) pending = e;
+        break;
+      }
+      if (e['kind'] == 'text' || e['kind'] == 'thinking') break;
+    }
+    String activity;
+    if (pending != null) {
+      final name = pending['name'] as String? ?? 'tool';
+      final summary = getToolSummary(
+        categorizeToolName(name),
+        (pending['input'] as Map?)?.cast<String, dynamic>() ?? const {},
+      );
+      activity = summary.isEmpty ? 'Running $name' : 'Running $name · $summary';
+    } else {
+      activity = 'Thinking…';
+    }
+    final updatedAt = (_agent?['updatedAt'] as num?)?.toInt();
+    final ago = updatedAt == null
+        ? ''
+        : formatAgo(
+            DateTime.now().difference(
+              DateTime.fromMillisecondsSinceEpoch(updatedAt),
+            ),
+          );
+    final color = Theme.of(context).colorScheme.primary;
+    return SafeArea(
+      top: false,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          border: Border(top: BorderSide(color: appColors.toolBubbleBorder)),
+        ),
+        child: Row(
+          children: [
+            Text('✻', style: TextStyle(color: color, fontSize: 13)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                activity,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+              ),
+            ),
+            if (ago.isNotEmpty)
+              Text(
+                'updated $ago',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                  color: appColors.subtleText,
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -240,6 +351,7 @@ class _SubagentScreenState extends State<SubagentScreen> {
           e['toolUseId'] as String: e,
     };
     final visible = _entries.where((e) => e['kind'] != 'tool_result').toList();
+    final running = _state == 'running';
 
     return ListView.builder(
       controller: _scroll,
@@ -265,6 +377,7 @@ class _SubagentScreenState extends State<SubagentScreen> {
             text: e['text'] as String? ?? '',
             isUser: e['role'] == 'user',
           ),
+          'thinking' => _SubagentThinking(text: e['text'] as String? ?? ''),
           'tool_use' => _SubagentToolCall(
             key: ValueKey('subagent_tool_${e['id']}'),
             name: e['name'] as String? ?? 'tool',
@@ -272,10 +385,98 @@ class _SubagentScreenState extends State<SubagentScreen> {
                 (e['input'] as Map?)?.cast<String, dynamic>() ??
                 const <String, dynamic>{},
             result: results[e['id']],
+            running: running,
           ),
           _ => const SizedBox.shrink(),
         };
       },
+    );
+  }
+}
+
+/// "3s", "2m", "1h" for the activity line.
+String formatAgo(Duration d) {
+  if (d.inSeconds < 60) return '${d.inSeconds.clamp(0, 59)}s ago';
+  if (d.inMinutes < 60) return '${d.inMinutes}m ago';
+  return '${d.inHours}h ago';
+}
+
+String subagentTitle(Map<String, dynamic> agent) {
+  final desc = agent['description'] as String?;
+  if (desc != null && desc.isNotEmpty) return desc;
+  final type = agent['agentType'] as String?;
+  if (type != null && type.isNotEmpty) return type;
+  return agent['agentId'] as String? ?? 'Subagent';
+}
+
+String subagentStateLabel(String state) => switch (state) {
+  'running' => 'Running',
+  'done' => 'Done',
+  'failed' => 'Failed',
+  'interrupted' => 'Interrupted',
+  _ => state,
+};
+
+/// Small coloured dot for a subagent state; pulses while running.
+class SubagentStateDot extends StatefulWidget {
+  final String state;
+
+  const SubagentStateDot({super.key, required this.state});
+
+  @override
+  State<SubagentStateDot> createState() => _SubagentStateDotState();
+}
+
+class _SubagentStateDotState extends State<SubagentStateDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(covariant SubagentStateDot oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _sync();
+  }
+
+  void _sync() {
+    if (widget.state == 'running') {
+      if (!_pulse.isAnimating) _pulse.repeat(reverse: true);
+    } else {
+      _pulse.stop();
+      _pulse.value = 1;
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appColors = Theme.of(context).extension<AppColors>()!;
+    final color = switch (widget.state) {
+      'running' => appColors.statusRunning,
+      'done' => appColors.statusIdle,
+      'failed' => appColors.errorText,
+      _ => appColors.subtleText,
+    };
+    return FadeTransition(
+      opacity: Tween<double>(begin: 0.35, end: 1).animate(_pulse),
+      child: Container(
+        width: 8,
+        height: 8,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      ),
     );
   }
 }
@@ -328,16 +529,76 @@ class _SubagentText extends StatelessWidget {
   }
 }
 
+/// Collapsed "∴ Thinking" line, like the CLI; tap to read.
+class _SubagentThinking extends StatefulWidget {
+  final String text;
+
+  const _SubagentThinking({required this.text});
+
+  @override
+  State<_SubagentThinking> createState() => _SubagentThinkingState();
+}
+
+class _SubagentThinkingState extends State<_SubagentThinking> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final appColors = Theme.of(context).extension<AppColors>()!;
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.bubbleMarginH,
+        vertical: 1,
+      ),
+      child: InkWell(
+        onTap: () => setState(() => _expanded = !_expanded),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 2),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '∴ Thinking',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontStyle: FontStyle.italic,
+                  color: appColors.subtleText,
+                ),
+              ),
+              if (_expanded)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4, left: 14),
+                  child: SelectableText(
+                    widget.text,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontStyle: FontStyle.italic,
+                      color: appColors.subtleText,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _SubagentToolCall extends StatefulWidget {
   final String name;
   final Map<String, dynamic> input;
   final Map<String, dynamic>? result;
+
+  /// False once the subagent stopped: a call without result was cut off.
+  final bool running;
 
   const _SubagentToolCall({
     super.key,
     required this.name,
     required this.input,
     required this.result,
+    required this.running,
   });
 
   @override
@@ -400,7 +661,7 @@ class _SubagentToolCallState extends State<_SubagentToolCall> {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  if (pending)
+                  if (pending && widget.running)
                     const SizedBox(
                       width: 10,
                       height: 10,
@@ -431,10 +692,7 @@ class _SubagentToolCallState extends State<_SubagentToolCall> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      SelectableText(
-                        _inputText(category),
-                        style: mono,
-                      ),
+                      SelectableText(_inputText(category), style: mono),
                       if (result != null) ...[
                         const Divider(height: 16),
                         SelectableText(

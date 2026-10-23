@@ -1,3 +1,4 @@
+import '../subagent/subagents_button.dart';
 import '../chat_session/widgets/lite_mode_controls.dart';
 import '../explore/explore_screen.dart';
 import '../file_browser/file_browser_reference.dart';
@@ -988,6 +989,7 @@ class _ChatScreenBody extends HookWidget {
                       inPlanMode: inPlanMode,
                     ),
                     actions: [
+                      SubagentsButton(sessionId: sessionId),
                       if (effectiveProjectPath != null)
                         IconButton(
                           key: const ValueKey('appbar_explore_button'),
