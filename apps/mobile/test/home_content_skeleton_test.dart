@@ -790,7 +790,7 @@ void main() {
         find.byKey(const ValueKey('project_show_more_/home/user/project-a')),
         findsNothing,
       );
-      expect(find.text('List'), findsOneWidget);
+      expect(find.text('Flat list'), findsOneWidget);
 
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getBool('session_list_group_recent_sessions'), isFalse);

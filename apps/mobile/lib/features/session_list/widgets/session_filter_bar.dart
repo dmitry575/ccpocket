@@ -60,10 +60,13 @@ class SessionFilterBar extends StatelessWidget {
       icon: groupRecentSessions
           ? Icons.account_tree_outlined
           : Icons.view_list_outlined,
-      label: groupRecentSessions ? 'Grouped' : 'List',
-      tooltip: 'Toggle recent session grouping',
+      label: groupRecentSessions ? 'By project' : 'Flat list',
+      // Fork: this is a view switch, not a filter, so it is never drawn in
+      // the "filter is on" accent colour (upstream lit it up for List).
+      tooltip: groupRecentSessions
+          ? 'Sessions are grouped by project. Click for one flat list.'
+          : 'One flat list of sessions. Click to group by project.',
       onTap: onToggleRecentGrouping,
-      isActive: !groupRecentSessions,
     );
   }
 
@@ -126,13 +129,16 @@ class SessionFilterBar extends StatelessWidget {
   }
 
   Widget _buildNamedToggle(BuildContext context) {
-    final l = AppLocalizations.of(context);
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final appColors = theme.extension<AppColors>()!;
 
+    // Fork: clearer wording; the chip is highlighted (with a check mark)
+    // only while the filter is on.
     return Tooltip(
-      message: l.tooltipNamedOnly,
+      message: namedOnly
+          ? 'Showing only sessions you gave a name. Click to show all.'
+          : 'Show only sessions you gave a name (renamed).',
       child: Material(
         color: namedOnly ? cs.primaryContainer : cs.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(16),
@@ -153,7 +159,7 @@ class SessionFilterBar extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  Icons.label_outlined,
+                  namedOnly ? Icons.check : Icons.label_outlined,
                   size: 14,
                   color: namedOnly
                       ? cs.onPrimaryContainer
@@ -161,7 +167,7 @@ class SessionFilterBar extends StatelessWidget {
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  l.named,
+                  'Named only',
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w500,
