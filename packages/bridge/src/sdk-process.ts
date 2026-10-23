@@ -967,7 +967,32 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
         console.error("[sdk-process] Interrupt error:", err);
       });
       this.settlePendingPermissions("Interrupted by user");
+      this.armInterruptWatchdog();
     }
+  }
+
+  private interruptWatchdog: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Queued input waits for the interrupted turn's `result`. When the CLI
+   * never sends one (seen after interrupting a turn blocked on a permission
+   * prompt), the messages stayed queued forever and the session looked
+   * frozen. After a grace period, release the queue anyway: the CLI accepts
+   * streamed input at any time and queues it itself.
+   */
+  private armInterruptWatchdog(): void {
+    if (this.interruptWatchdog) clearTimeout(this.interruptWatchdog);
+    this.interruptWatchdog = setTimeout(() => {
+      this.interruptWatchdog = null;
+      if (this.stopped || this._status === "idle") return;
+      console.warn(
+        "[sdk-process] No result 15 s after interrupt; releasing queued input",
+      );
+      this.settlePendingPermissions("Interrupted by user");
+      this.setStatus("idle");
+      this.deliverQueuedInputIfWaiting();
+    }, 15_000);
+    this.interruptWatchdog.unref?.();
   }
 
   /**
@@ -1743,6 +1768,10 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
         }
         break;
       case "result":
+        if (this.interruptWatchdog) {
+          clearTimeout(this.interruptWatchdog);
+          this.interruptWatchdog = null;
+        }
         // The turn is over; any request still unanswered can no longer be
         // acted on by the CLI.
         this.settlePendingPermissions("Turn ended before the request was answered");

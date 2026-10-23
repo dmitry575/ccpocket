@@ -2035,6 +2035,44 @@ describe("buildAskUserAnswers", () => {
   });
 });
 
+describe("SdkProcess interrupt watchdog", () => {
+  it("releases queued input when no result arrives after an interrupt", async () => {
+    vi.useFakeTimers();
+    try {
+      const proc = new SdkProcess();
+      const internal = proc as any;
+      internal.queryInstance = { interrupt: vi.fn(async () => undefined) };
+      internal._status = "running";
+      internal.pendingInputQueue.push({ text: "queued while busy" });
+      const delivered: string[] = [];
+      internal.userMessageResolve = (m: any) => delivered.push(m.message.content[0].text);
+
+      proc.interrupt();
+      vi.advanceTimersByTime(14_000);
+      expect(delivered).toHaveLength(0);
+      vi.advanceTimersByTime(2_000);
+      expect(delivered).toEqual(["queued while busy"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does nothing when the interrupted turn ends normally", () => {
+    vi.useFakeTimers();
+    try {
+      const proc = new SdkProcess();
+      const internal = proc as any;
+      internal.queryInstance = { interrupt: vi.fn(async () => undefined) };
+      internal._status = "running";
+      proc.interrupt();
+      internal.updateStatusFromMessage({ type: "result", subtype: "success" });
+      expect(internal.interruptWatchdog).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("SdkProcess permission request timeout", () => {
   it("denies an unanswered request after BRIDGE_PERMISSION_TIMEOUT_MINUTES", async () => {
     vi.useFakeTimers();
