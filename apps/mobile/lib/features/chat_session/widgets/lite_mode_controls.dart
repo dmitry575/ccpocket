@@ -86,7 +86,7 @@ class LiteModeActivityBar extends StatelessWidget {
         return BlocSelector<ChatSessionCubit, ChatSessionState, bool>(
           selector: (state) => state.status != ProcessStatus.idle,
           builder: (context, active) =>
-              active ? const _ActivityStatus() : const SizedBox.shrink(),
+              active ? const _TerminalActivityLine() : const SizedBox.shrink(),
         );
       },
     );
@@ -201,4 +201,76 @@ String formatLiteModeDuration(Duration duration, AppLocalizations l) {
     return l.liteModeDurationHours(seconds ~/ 3600, seconds ~/ 60 % 60);
   }
   return l.liteModeDurationDays(seconds ~/ 86400, seconds ~/ 3600 % 24);
+}
+
+/// Fork: Claude Code terminal-style status line shown while the agent works,
+/// e.g. "✻ Thinking… 0:42" or "✻ Bash: gh run watch 123… 1:05". The timer
+/// counts from the moment this widget saw the session become busy, so it
+/// keeps running through tool calls and streaming instead of resetting.
+class _TerminalActivityLine extends StatefulWidget {
+  const _TerminalActivityLine();
+
+  @override
+  State<_TerminalActivityLine> createState() => _TerminalActivityLineState();
+}
+
+class _TerminalActivityLineState extends State<_TerminalActivityLine> {
+  late final DateTime _startedAt;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _startedAt =
+        context.read<ChatSessionCubit>().activityObservedSince ?? DateTime.now();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  static String _clock(Duration d) {
+    final s = d.inSeconds < 0 ? 0 : d.inSeconds;
+    final h = s ~/ 3600;
+    final m = (s ~/ 60) % 60;
+    final sec = (s % 60).toString().padLeft(2, '0');
+    return h > 0 ? '$h:${m.toString().padLeft(2, '0')}:$sec' : '$m:$sec';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cubit = context.watch<ChatSessionCubit>();
+    final theme = Theme.of(context);
+    final status = cubit.state.status;
+    final tool = cubit.latestActivityTool;
+    final action = switch (status) {
+      ProcessStatus.starting => 'Starting',
+      ProcessStatus.compacting => 'Compacting conversation',
+      ProcessStatus.waitingApproval => 'Waiting for your approval',
+      _ => (tool == null || tool == 'Thinking') ? 'Thinking' : tool,
+    };
+    final elapsed = _clock(DateTime.now().difference(_startedAt));
+    final text = '\u273B $action\u2026  $elapsed';
+    return Padding(
+      key: const ValueKey('terminal_activity_line'),
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+      child: Tooltip(
+        message: text,
+        child: Text(
+          text,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.primary,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+      ),
+    );
+  }
 }
