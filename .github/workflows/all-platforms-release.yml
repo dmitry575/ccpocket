@@ -257,9 +257,13 @@ jobs:
 
   release:
     needs: [windows, linux, macos, android]
+    # Publish whatever built: a flaky runner (e.g. a slow Ubuntu apt mirror
+    # for Linux) must not hold back the other platforms.
+    if: ${{ !cancelled() && (needs.windows.result == 'success' || needs.macos.result == 'success' || needs.android.result == 'success' || needs.linux.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           path: artifacts
       - name: Flatten artifacts
