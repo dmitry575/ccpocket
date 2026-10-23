@@ -979,6 +979,11 @@ class BridgeService implements BridgeServiceBase {
                     );
                   }
                 }
+                // The session list screen waits for this result to clear its
+                // pending archive request; without forwarding, every archive
+                // ended in "Response timed out" after 20 s plus a page-one
+                // reload.
+                _messageController.add(msg);
               case WorktreeRemovedMessage():
                 final accepted = _acceptWorktreeRemovedResponse(msg);
                 if (accepted != null) _messageController.add(accepted);

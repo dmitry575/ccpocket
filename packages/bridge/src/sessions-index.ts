@@ -370,6 +370,7 @@ const SYSTEM_INJECTED_PREFIXES = [
   "[SYSTEM NOTIFICATION",
   "This session is being continued from",
   "Caveat: The messages below were generated",
+  "<artifact-content-authored-by-others",
 ];
 
 function isSystemInjectedText(text: string): boolean {
@@ -726,6 +727,25 @@ async function parseClaudeJsonlFileFast(
     const cleanTail = firstNewline >= 0 ? tailRaw.slice(firstNewline + 1) : "";
 
     parsedChunks = parseFromChunks(sessionId, headStr, cleanTail);
+
+    // A huge first record and large trailing records (api-request blobs,
+    // file-history snapshots) can leave both chunks without a single
+    // user/assistant line, and the session silently disappeared from the
+    // list. Retry once with much wider windows before giving up.
+    if (!parsedChunks.entry && fileSize > HEAD_BYTES + TAIL_BYTES) {
+      const wide = Math.min(Math.floor(fileSize / 2), ENTRYPOINT_LOOKBACK_BYTES * 4);
+      const wideHead = Buffer.alloc(wide);
+      await fh.read(wideHead, 0, wide, 0);
+      const wideTailBuf = Buffer.alloc(wide);
+      await fh.read(wideTailBuf, 0, wide, fileSize - wide);
+      const wideTailRaw = wideTailBuf.toString("utf-8");
+      const nl = wideTailRaw.indexOf("\n");
+      parsedChunks = parseFromChunks(
+        sessionId,
+        wideHead.toString("utf-8"),
+        nl >= 0 ? wideTailRaw.slice(nl + 1) : "",
+      );
+    }
 
     // Transcripts with long multi-byte (e.g. Cyrillic) messages can keep the
     // entrypoint out of both chunks; one wider read of the end of the file

@@ -46,6 +46,21 @@ const _leftPaneWidthPrefKey = 'workspace_left_pane_width';
 
 enum _WorkspaceLayoutMode { single, multiPane }
 
+/// In the multi-pane layout every pane has its own Scaffold, and a SnackBar
+/// is shown on every root Scaffold under the app's ScaffoldMessenger, so one
+/// message appeared twice (left and right halves, dismissed separately).
+/// An enclosing Scaffold makes the pane Scaffolds nested ones, so the
+/// message is shown once across the whole window.
+Widget _sharedSnackBarHost({required bool compact, required Widget child}) {
+  if (compact) return child;
+  return Scaffold(
+    backgroundColor: Colors.transparent,
+    resizeToAvoidBottomInset: false,
+    body: child,
+  );
+}
+
+
 double _leftPaneWidth(double width) {
   if (width < 1024) return 260;
   return width >= 1280 ? 360 : 320;
@@ -884,7 +899,9 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
                 }
               }
             },
-            child: Stack(
+            child: _sharedSnackBarHost(
+              compact: compact,
+              child: Stack(
               children: [
                 Positioned(
                   key: const ValueKey('workspace_list_slot'),
@@ -979,6 +996,7 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
                     ),
                   ),
               ],
+            ),
             ),
           );
         },

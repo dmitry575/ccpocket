@@ -968,7 +968,11 @@ class HomeContentState extends State<HomeContent> {
                   ),
                   displayLimit:
                       widget.projectSessionDisplayLimits[group.groupKey] ?? 5,
+                  // When the bridge said the whole list is loaded there is
+                  // nothing more to fetch for any project, so do not offer
+                  // "Show more" on groups that already show everything.
                   canLoadFromBridge:
+                      widget.hasMoreSessions &&
                       widget.currentProjectFilter == null &&
                       !widget.exhaustedProjectPaths.contains(group.groupKey),
                   archivingSessionIds: widget.archivingSessionIds,
