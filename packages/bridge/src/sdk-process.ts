@@ -492,6 +492,16 @@ function isClaudeSystemInjectedUserText(text: string): boolean {
  * Exported for testing.
  */
 export function sdkMessageToServerMessage(msg: SDKMessage): ServerMessage | null {
+  // Fork: tool frames of subagents arrive without any marker the app could
+  // use, so they showed up as the main agent's own tool calls (and vanished
+  // on history reload). The app opens the subagent transcript instead.
+  if (
+    (msg.type === "assistant" || msg.type === "user") &&
+    (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id &&
+    process.env.BRIDGE_SHOW_SUBAGENT_FRAMES !== "1"
+  ) {
+    return null;
+  }
   switch (msg.type) {
     case "system": {
       const sys = msg as Record<string, unknown>;

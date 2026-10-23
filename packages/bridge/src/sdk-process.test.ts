@@ -254,6 +254,36 @@ describe("buildThinkingOptions", () => {
 // ---- sdkMessageToServerMessage ----
 
 describe("sdkMessageToServerMessage", () => {
+  describe("subagent frames", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    const frame = (type: "assistant" | "user", parent: string | null) =>
+      ({
+        type,
+        parent_tool_use_id: parent,
+        message: {
+          role: type,
+          content:
+            type === "assistant"
+              ? [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a" } }]
+              : [{ type: "tool_result", tool_use_id: "t1", content: "ok" }],
+        },
+      }) as unknown as Parameters<typeof sdkMessageToServerMessage>[0];
+
+    it("keeps subagent tool frames out of the main chat", () => {
+      expect(sdkMessageToServerMessage(frame("assistant", "toolu_agent"))).toBeNull();
+      expect(sdkMessageToServerMessage(frame("user", "toolu_agent"))).toBeNull();
+      expect(sdkMessageToServerMessage(frame("assistant", null))?.type).toBe("assistant");
+    });
+
+    it("forwards them with BRIDGE_SHOW_SUBAGENT_FRAMES=1", () => {
+      vi.stubEnv("BRIDGE_SHOW_SUBAGENT_FRAMES", "1");
+      expect(sdkMessageToServerMessage(frame("assistant", "toolu_agent"))?.type).toBe("assistant");
+    });
+  });
+
   describe("assistant thinking filtering", () => {
     it("removes whitespace-only thinking while preserving visible content", () => {
       const sdkMsg = {
