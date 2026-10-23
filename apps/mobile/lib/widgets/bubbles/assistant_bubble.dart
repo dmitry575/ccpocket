@@ -19,6 +19,8 @@ import '../../utils/tool_categories.dart';
 import '../../utils/codex_plan_update.dart';
 import '../../features/file_peek/file_path_syntax.dart';
 import '../../features/file_peek/markdown_link_handler.dart';
+import '../../features/chat_session/state/chat_session_cubit.dart';
+import '../../features/subagent/subagent_screen.dart';
 import 'error_bubble.dart';
 import '../plan_detail_sheet.dart';
 import '../google_search_text_selection.dart';
@@ -426,6 +428,7 @@ class _ToolUseTileState extends State<ToolUseTile> {
         inputSummary: _inputSummary(),
         onTap: _cycleExpansion,
         onLongPress: _copyContent,
+        onOpenSubagent: _subagentOpener(),
       );
     }
     return _ToolUseCard(
@@ -438,6 +441,27 @@ class _ToolUseTileState extends State<ToolUseTile> {
       onTap: _cycleExpansion,
       onLongPress: _copyContent,
       onOpenGitScreen: _openGitScreen,
+      onOpenSubagent: _subagentOpener(),
+    );
+  }
+
+  /// Fork: Agent/Task cards open the subagent's transcript. Null when the
+  /// tile is shown outside a chat session (no cubit to take the id from).
+  VoidCallback? _subagentOpener() {
+    if (widget.name != 'Agent' && widget.name != 'Task') return null;
+    if (widget.toolUseId.isEmpty) return null;
+    final String sessionId;
+    try {
+      sessionId = context.read<ChatSessionCubit>().sessionId;
+    } catch (_) {
+      return null;
+    }
+    if (sessionId.isEmpty) return null;
+    return () => SubagentScreen.open(
+      context,
+      sessionId: sessionId,
+      toolUseId: widget.toolUseId,
+      title: widget.input['description']?.toString(),
     );
   }
 
@@ -527,6 +551,7 @@ class _ToolUseCollapsed extends StatelessWidget {
   final String inputSummary;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
+  final VoidCallback? onOpenSubagent;
 
   const _ToolUseCollapsed({
     required this.name,
@@ -534,6 +559,7 @@ class _ToolUseCollapsed extends StatelessWidget {
     required this.inputSummary,
     required this.onTap,
     required this.onLongPress,
+    this.onOpenSubagent,
   });
 
   @override
@@ -576,6 +602,8 @@ class _ToolUseCollapsed extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              if (onOpenSubagent != null)
+                _OpenSubagentButton(onPressed: onOpenSubagent!),
               Icon(Icons.chevron_right, size: 14, color: appColors.subtleText),
             ],
           ),
@@ -595,6 +623,7 @@ class _ToolUseCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onLongPress;
   final VoidCallback onOpenGitScreen;
+  final VoidCallback? onOpenSubagent;
 
   static const _previewLines = 5;
 
@@ -608,6 +637,7 @@ class _ToolUseCard extends StatelessWidget {
     required this.onTap,
     required this.onLongPress,
     required this.onOpenGitScreen,
+    this.onOpenSubagent,
   });
 
   @override
@@ -667,6 +697,8 @@ class _ToolUseCard extends StatelessWidget {
                     _DiffStatsMini(diffFile: diffFile, appColors: appColors),
                     const SizedBox(width: 4),
                   ],
+                  if (onOpenSubagent != null)
+                    _OpenSubagentButton(onPressed: onOpenSubagent!),
                   Icon(chevronIcon, size: 16, color: appColors.subtleText),
                 ],
               ),
@@ -734,6 +766,44 @@ class _ToolUseCard extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// Fork: compact "open subagent" action in Agent/Task tool headers.
+class _OpenSubagentButton extends StatelessWidget {
+  final VoidCallback onPressed;
+
+  const _OpenSubagentButton({required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.primary;
+    return Tooltip(
+      message: 'Open subagent',
+      child: InkWell(
+        key: const ValueKey('open_subagent_button'),
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(4),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.open_in_new, size: 13, color: color),
+              const SizedBox(width: 3),
+              Text(
+                'Open',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: color,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

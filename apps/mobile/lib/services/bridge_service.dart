@@ -4647,6 +4647,43 @@ class BridgeService implements BridgeServiceBase {
     }
   }
 
+  /// Fork: transcript of the subagent started by an Agent/Task tool call
+  /// (`GET /api/subagent`). [session] is the bridge or Claude session id.
+  /// Returns the HTTP status and the decoded body; status 0 means the
+  /// request did not reach the bridge, 404 that the subagent has no
+  /// transcript yet (or the bridge is too old to know the route).
+  Future<({int status, Map<String, dynamic>? body})> fetchSubagentHistory({
+    required String session,
+    String? toolUseId,
+    String? agentId,
+  }) async {
+    final baseUrl = httpBaseUrl;
+    if (baseUrl == null) return (status: 0, body: null);
+
+    try {
+      final uri = Uri.parse('$baseUrl/api/subagent').replace(
+        queryParameters: {
+          'session': session,
+          'toolUseId': ?toolUseId,
+          'agentId': ?agentId,
+        },
+      );
+      final response = await http
+          .get(uri, headers: _bridgeAuthHeaders)
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode != 200) {
+        return (status: response.statusCode, body: null);
+      }
+      final json = jsonDecode(utf8.decode(response.bodyBytes));
+      return (
+        status: 200,
+        body: json is Map<String, dynamic> ? json : null,
+      );
+    } catch (_) {
+      return (status: 0, body: null);
+    }
+  }
+
   /// Delete a gallery image by ID.
   /// Returns true on success, false on failure.
   /// On success, immediately removes the image from the local cache
