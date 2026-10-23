@@ -51,8 +51,9 @@ enum _WorkspaceLayoutMode { single, multiPane }
 /// message appeared twice (left and right halves, dismissed separately).
 /// An enclosing Scaffold makes the pane Scaffolds nested ones, so the
 /// message is shown once across the whole window.
+/// Always present (also in the single-pane layout) so switching layouts does
+/// not change the tree shape and drop the panes' state.
 Widget _sharedSnackBarHost({required bool compact, required Widget child}) {
-  if (compact) return child;
   return Scaffold(
     backgroundColor: Colors.transparent,
     resizeToAvoidBottomInset: false,
