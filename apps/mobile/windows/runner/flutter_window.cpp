@@ -65,6 +65,17 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
       break;
+    case WM_SYSCOMMAND:
+      // Fork: switching the keyboard layout with Alt+Shift releases Alt on
+      // its own, which makes Windows enter window-menu mode (SC_KEYMENU with
+      // lParam 0). This app has no menu bar, so the next keystroke was eaten
+      // by the invisible menu and Windows played the error "ding". Swallow
+      // keyboard-initiated menu activation; Alt+Space (lParam ' ') still
+      // opens the system menu.
+      if ((wparam & 0xFFF0) == SC_KEYMENU && lparam == 0) {
+        return 0;
+      }
+      break;
   }
 
   return Win32Window::MessageHandler(hwnd, message, wparam, lparam);
