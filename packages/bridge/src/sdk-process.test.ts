@@ -834,7 +834,28 @@ describe("SdkProcess.approveAlways", () => {
 });
 
 describe("SdkProcess input dispatch", () => {
-  it("queues and requests interrupt while a turn is running", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("folds input into the running turn without interrupting", () => {
+    const proc = new SdkProcess();
+    const resolve = vi.fn();
+    const internal = proc as any;
+    internal._status = "running";
+    internal.userMessageResolve = resolve;
+
+    expect(proc.dispatchInput("follow up")).toEqual({
+      queued: false,
+      shouldInterrupt: false,
+    });
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(proc.hasInputQueue).toBe(false);
+    expect(proc.status).toBe("running");
+  });
+
+  it("queues and requests interrupt while running with BRIDGE_INTERRUPT_ON_INPUT=1", () => {
+    vi.stubEnv("BRIDGE_INTERRUPT_ON_INPUT", "1");
     const proc = new SdkProcess();
     const resolve = vi.fn();
     const internal = proc as any;
@@ -847,6 +868,37 @@ describe("SdkProcess input dispatch", () => {
     });
     expect(resolve).not.toHaveBeenCalled();
     expect(proc.hasInputQueue).toBe(true);
+  });
+
+  it("queues without interrupting when the CLI is not reading input yet", () => {
+    const proc = new SdkProcess();
+    const internal = proc as any;
+    internal._status = "running";
+    internal.userMessageResolve = null;
+
+    expect(proc.dispatchInput("follow up")).toEqual({
+      queued: true,
+      shouldInterrupt: false,
+    });
+    expect(proc.hasInputQueue).toBe(true);
+  });
+
+  it("does not mark the session busy for subagent frames", () => {
+    const proc = new SdkProcess();
+    const internal = proc as any;
+    internal._status = "idle";
+    internal.updateStatusFromMessage({
+      type: "assistant",
+      parent_tool_use_id: "toolu_bg",
+      message: { content: [] },
+    });
+    expect(proc.status).toBe("idle");
+    internal.updateStatusFromMessage({
+      type: "assistant",
+      parent_tool_use_id: null,
+      message: { content: [] },
+    });
+    expect(proc.status).toBe("running");
   });
 
   it("queues without interrupting while approval is pending", () => {
@@ -883,6 +935,7 @@ describe("SdkProcess input dispatch", () => {
   );
 
   it("applies the running policy to image input", () => {
+    vi.stubEnv("BRIDGE_INTERRUPT_ON_INPUT", "1");
     const proc = new SdkProcess();
     const resolve = vi.fn();
     const internal = proc as any;

@@ -157,6 +157,14 @@ type ClaudeAuthClassification = "unknown" | "api_key" | "subscription";
 
 const CLAUDE_AUTH_RESOLUTION_TIMEOUT_MS = 500;
 
+/**
+ * Fork: upstream interrupts the running turn when a message arrives and
+ * resends it afterwards. That also kills background subagents, so by default
+ * the message is folded into the turn instead; BRIDGE_INTERRUPT_ON_INPUT=1
+ * restores the upstream behaviour.
+ */
+const interruptOnInput = (): boolean => process.env.BRIDGE_INTERRUPT_ON_INPUT === "1";
+
 export async function listAvailableClaudeModels(
   projectPath?: string,
 ): Promise<ClaudeModelMetadata[]> {
@@ -1005,9 +1013,12 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
   }
 
   dispatchInput(text: string): { queued: boolean; shouldInterrupt: boolean } {
-    const shouldInterrupt =
-      this._status === "running" || this._status === "compacting";
-    const mustQueue = shouldInterrupt || this._status === "waiting_approval";
+    const busy = this._status === "running" || this._status === "compacting";
+    if (busy && !interruptOnInput() && this.userMessageResolve) {
+      return this.foldIntoTurn(text);
+    }
+    const shouldInterrupt = busy && interruptOnInput();
+    const mustQueue = busy || this._status === "waiting_approval";
     if (mustQueue || !this.userMessageResolve) {
       // Queue the message. The async generator (createUserMessageStream)
       // drains pendingInputQueue on each iteration, so it will be
@@ -1019,6 +1030,22 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     const resolve = this.userMessageResolve;
     this.userMessageResolve = null;
     this.resolveUserMessage(resolve, text);
+    return { queued: false, shouldInterrupt: false };
+  }
+
+  /**
+   * Fork: hand a message sent during a turn straight to the CLI, which folds
+   * it into the running turn (as typing in the terminal does) instead of the
+   * upstream interrupt-and-resend, which also killed background subagents.
+   */
+  private foldIntoTurn(
+    text: string,
+    images?: Array<{ base64: string; mimeType: string }>,
+  ): { queued: boolean; shouldInterrupt: boolean } {
+    const resolve = this.userMessageResolve!;
+    this.userMessageResolve = null;
+    console.log(`[sdk-process] Folding input into the running turn${images ? ` with ${images.length} image(s)` : ""}`);
+    this.resolveUserMessage(resolve, text, images);
     return { queued: false, shouldInterrupt: false };
   }
 
@@ -1035,9 +1062,12 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     text: string,
     images: Array<{ base64: string; mimeType: string }>,
   ): { queued: boolean; shouldInterrupt: boolean } {
-    const shouldInterrupt =
-      this._status === "running" || this._status === "compacting";
-    const mustQueue = shouldInterrupt || this._status === "waiting_approval";
+    const busy = this._status === "running" || this._status === "compacting";
+    if (busy && !interruptOnInput() && this.userMessageResolve) {
+      return this.foldIntoTurn(text, images);
+    }
+    const shouldInterrupt = busy && interruptOnInput();
+    const mustQueue = busy || this._status === "waiting_approval";
     if (mustQueue || !this.userMessageResolve) {
       this.pendingInputQueue.push({ text, images });
       console.log(`[sdk-process] Queued input with ${images.length} image(s) (queue depth: ${this.pendingInputQueue.length})`);
@@ -1758,11 +1788,14 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
         break;
       }
       case "assistant":
-        if (this.pendingPermissions.size === 0) {
-          this.setStatus("running");
-        }
-        break;
       case "user":
+        // Fork: frames of (background) subagents carry parent_tool_use_id
+        // and keep arriving after the main turn ended. They must not mark
+        // the session busy, or the next user message interrupts the turn
+        // and the interrupt kills those subagents.
+        if ((msg as { parent_tool_use_id?: string | null }).parent_tool_use_id) {
+          break;
+        }
         if (this.pendingPermissions.size === 0) {
           this.setStatus("running");
         }
