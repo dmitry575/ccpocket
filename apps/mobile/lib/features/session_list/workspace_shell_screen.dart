@@ -34,7 +34,7 @@ export '../workspace/state/workspace_destination.dart'
 const workspaceMultiPaneBreakpoint = 862.0;
 const _twoPaneDividerWidth = 1.0;
 const _paneResizeHandleWidth = _twoPaneDividerWidth;
-const _paneResizePointerHandleWidth = 12.0;
+const _paneResizePointerHandleWidth = 16.0;
 const _paneResizeTouchHandleWidth = 44.0;
 const _minCenterPaneWidth = 360.0;
 const _minRightPaneWidth = 240.0;
@@ -1062,6 +1062,7 @@ class _WorkspaceResizeHandle extends StatefulWidget {
 
 class _WorkspaceResizeHandleState extends State<_WorkspaceResizeHandle> {
   bool _dragging = false;
+  bool _hovering = false;
 
   void _setDragging(bool dragging) {
     if (_dragging == dragging) return;
@@ -1075,6 +1076,8 @@ class _WorkspaceResizeHandleState extends State<_WorkspaceResizeHandle> {
 
     return MouseRegion(
       cursor: SystemMouseCursors.resizeColumn,
+      onEnter: (_) => setState(() => _hovering = true),
+      onExit: (_) => setState(() => _hovering = false),
       child: Semantics(
         label: widget.label,
         hint: 'Drag horizontally to resize',
@@ -1089,9 +1092,12 @@ class _WorkspaceResizeHandleState extends State<_WorkspaceResizeHandle> {
           onHorizontalDragEnd: (_) => _setDragging(false),
           onHorizontalDragCancel: () => _setDragging(false),
           child: Center(
-            child: Container(
-              width: _twoPaneDividerWidth,
-              color: _dragging ? activeColor : widget.color,
+            // Fork: a wider, highlighted grip on hover/drag so the border
+            // is easy to find and grab.
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              width: _dragging || _hovering ? 4 : _twoPaneDividerWidth,
+              color: _dragging || _hovering ? activeColor : widget.color,
             ),
           ),
         ),

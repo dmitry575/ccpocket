@@ -35,25 +35,22 @@ class SessionFilterBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      physics: const BouncingScrollPhysics(),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _buildDisplayModeDropdown(context),
-          const SizedBox(width: 8),
-          _buildGroupingToggle(context),
-          const SizedBox(width: 8),
+    // Fork: wrap onto several lines instead of a sideways-scrolling row, so
+    // every filter stays visible in a narrow session list pane. The
+    // Claude/Codex provider switch is only shown when it is actually in use
+    // (this bridge runs Claude only).
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        if (projects.isNotEmpty) _buildProjectDropdown(context),
+        _buildNamedToggle(context),
+        _buildGroupingToggle(context),
+        _buildDisplayModeDropdown(context),
+        if (providerFilter != ProviderFilter.all)
           _buildProviderDropdown(context),
-          const SizedBox(width: 8),
-          if (projects.isNotEmpty) ...[
-            _buildProjectDropdown(context),
-            const SizedBox(width: 8),
-          ],
-          _buildNamedToggle(context),
-        ],
-      ),
+      ],
     );
   }
 
