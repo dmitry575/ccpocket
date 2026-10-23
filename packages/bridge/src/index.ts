@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { setupProxy } from "./proxy.js";
 import { authenticateRequest, isAuthConfigured, isLoopbackHost, parseRequestUrl } from "./auth.js";
 import { DeviceTokenStore } from "./device-tokens.js";
+import { getSubagentHistory } from "./subagent-history.js";
 import { BridgeWebSocketServer } from "./websocket.js";
 import { ImageStore } from "./image-store.js";
 import { MediaStore } from "./media-store.js";
@@ -267,6 +268,7 @@ export async function startServer() {
     // Everything below either spends the owner's provider quota, runs
     // commands, or reads/writes files: the API key is mandatory.
     const needsKey =
+      pathname === "/api/subagent" ||
       pathname === "/usage" ||
       pathname === "/doctor" ||
       // Gallery: list, upload and delete need the key. GET /api/gallery/:id
@@ -276,6 +278,35 @@ export async function startServer() {
       (pathname.startsWith("/api/gallery/") && req.method !== "GET");
     if (needsKey && !authorized) {
       unauthorized();
+      return;
+    }
+
+    // Fork: subagent transcript viewer.
+    // GET /api/subagent?session=<bridge or Claude session id>&toolUseId=...|agentId=...
+    if (pathname === "/api/subagent" && req.method === "GET") {
+      const ref = requestUrl.searchParams.get("session") ?? "";
+      const toolUseId = requestUrl.searchParams.get("toolUseId") ?? undefined;
+      const agentId = requestUrl.searchParams.get("agentId") ?? undefined;
+      const claudeSessionId = wsServer?.claudeSessionIdFor(ref) ?? ref;
+      if (!claudeSessionId || (!toolUseId && !agentId)) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "session and toolUseId or agentId are required" }));
+        return;
+      }
+      getSubagentHistory(claudeSessionId, { toolUseId, agentId })
+        .then((history) => {
+          if (!history) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Subagent not found (it may not have started yet)" }));
+            return;
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(history));
+        })
+        .catch((err) => {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: String(err) }));
+        });
       return;
     }
 

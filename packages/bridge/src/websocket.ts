@@ -8143,6 +8143,12 @@ export class BridgeWebSocketServer {
    * Claude session id, if any. Sessions in the middle of being destroyed are
    * not in the manager's list any more.
    */
+  /** Claude session id for a bridge session id; other values pass through. */
+  claudeSessionIdFor(ref: string): string {
+    if (!ref) return ref;
+    return this.sessionManager.get(ref)?.claudeSessionId ?? ref;
+  }
+
   findLiveClaudeSession(claudeSessionId: string): SessionSummary | undefined {
     return this.sessionManager
       .list()
