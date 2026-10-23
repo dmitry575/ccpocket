@@ -1,5 +1,24 @@
+/// Matches "scheme://" at the start of a pasted URL.
+final _schemePrefix = RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*://');
+
 String normalizeHostInput(String host) {
   var normalized = host.trim();
+  // Users paste the full connection URL ("wss://1.2.3.4:8766/?token=...")
+  // into the host field. Keep only the host part; otherwise "wss:" makes
+  // Uri treat the value as an IPv6 literal and throw FormatException.
+  if (_schemePrefix.hasMatch(normalized)) {
+    normalized = normalized.replaceFirst(_schemePrefix, '');
+    final end = normalized.indexOf(RegExp(r'[/?#]'));
+    if (end >= 0) normalized = normalized.substring(0, end);
+    final at = normalized.lastIndexOf('@');
+    if (at >= 0) normalized = normalized.substring(at + 1);
+    if (normalized.startsWith('[')) {
+      final close = normalized.indexOf(']');
+      if (close > 0) normalized = normalized.substring(0, close + 1);
+    } else if (':'.allMatches(normalized).length == 1) {
+      normalized = normalized.substring(0, normalized.indexOf(':'));
+    }
+  }
   if (normalized.startsWith('[') && normalized.endsWith(']')) {
     normalized = normalized.substring(1, normalized.length - 1).trim();
   }

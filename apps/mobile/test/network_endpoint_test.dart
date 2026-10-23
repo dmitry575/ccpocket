@@ -2,6 +2,27 @@ import 'package:ccpocket/utils/network_endpoint.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('pasted connection URLs in the host field', () {
+    test('keeps only the host', () {
+      expect(normalizeHostInput('wss://167.104.102.253:8766'), '167.104.102.253');
+      expect(
+        normalizeHostInput(' wss://167.104.102.253:8766/?token=abc '),
+        '167.104.102.253',
+      );
+      expect(normalizeHostInput('ws://example.com/path'), 'example.com');
+      expect(normalizeHostInput('https://[::1]:8765/'), '::1');
+      expect(normalizeHostInput('192.168.1.5'), '192.168.1.5');
+      expect(normalizeHostInput('fe80::1'), 'fe80::1');
+    });
+
+    test('formatUriOrigin no longer throws on a pasted URL', () {
+      expect(
+        formatUriOrigin(scheme: 'https', host: 'wss://167.104.102.253:8766', port: 8766),
+        'https://167.104.102.253:8766',
+      );
+    });
+  });
+
   group('network endpoint formatting', () {
     test('keeps IPv4 and DNS hosts unchanged', () {
       expect(formatHostPort('192.168.1.1', 9000), '192.168.1.1:9000');
