@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { setupProxy } from "./proxy.js";
 import { authenticateRequest, isAuthConfigured, isLoopbackHost, parseRequestUrl } from "./auth.js";
 import { DeviceTokenStore } from "./device-tokens.js";
-import { getSubagentHistory } from "./subagent-history.js";
+import { getSubagentHistory, listSubagentMeta } from "./subagent-history.js";
 import { BridgeWebSocketServer } from "./websocket.js";
 import { ImageStore } from "./image-store.js";
 import { MediaStore } from "./media-store.js";
@@ -270,6 +270,7 @@ export async function startServer() {
     // commands, or reads/writes files: the API key is mandatory.
     const needsKey =
       pathname === "/api/subagent" ||
+      pathname === "/api/subagents" ||
       pathname === "/usage" ||
       pathname === "/doctor" ||
       // Gallery: list, upload and delete need the key. GET /api/gallery/:id
@@ -288,13 +289,15 @@ export async function startServer() {
       const ref = requestUrl.searchParams.get("session") ?? "";
       const toolUseId = requestUrl.searchParams.get("toolUseId") ?? undefined;
       const agentId = requestUrl.searchParams.get("agentId") ?? undefined;
+      const afterRaw = requestUrl.searchParams.get("after");
+      const after = afterRaw !== null && /^\d+$/.test(afterRaw) ? Number(afterRaw) : undefined;
       const claudeSessionId = wsServer?.claudeSessionIdFor(ref) ?? ref;
       if (!claudeSessionId || (!toolUseId && !agentId)) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "session and toolUseId or agentId are required" }));
         return;
       }
-      getSubagentHistory(claudeSessionId, { toolUseId, agentId })
+      getSubagentHistory(claudeSessionId, { toolUseId, agentId, after })
         .then((history) => {
           if (!history) {
             res.writeHead(404, { "Content-Type": "application/json" });
@@ -303,6 +306,28 @@ export async function startServer() {
           }
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(history));
+        })
+        .catch((err) => {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: String(err) }));
+        });
+      return;
+    }
+
+    // Fork: subagents of a session with their state (running/done/interrupted).
+    // GET /api/subagents?session=<bridge or Claude session id>
+    if (pathname === "/api/subagents" && req.method === "GET") {
+      const ref = requestUrl.searchParams.get("session") ?? "";
+      const claudeSessionId = wsServer?.claudeSessionIdFor(ref) ?? ref;
+      if (!claudeSessionId) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "session is required" }));
+        return;
+      }
+      listSubagentMeta(claudeSessionId)
+        .then((agents) => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ agents }));
         })
         .catch((err) => {
           res.writeHead(500, { "Content-Type": "application/json" });
