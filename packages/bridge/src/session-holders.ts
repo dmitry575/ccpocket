@@ -19,6 +19,10 @@ export interface ExternalSessionHolder {
   kind: "background" | "cli";
   pid: number;
   description: string;
+  /** Background sessions only: registry status ("idle" | "busy" | ...). */
+  status?: string;
+  /** Background sessions only: short id accepted by `claude stop`. */
+  jobId?: string;
 }
 
 export interface SessionHolderDeps {
@@ -77,6 +81,8 @@ function readBackgroundRegistry(
         kind: "background",
         pid,
         description: `claude --bg session "${name}" (pid ${pid})`,
+        ...(typeof entry.status === "string" ? { status: entry.status } : {}),
+        jobId: typeof entry.jobId === "string" ? entry.jobId : sessionId.slice(0, 8),
       };
     } catch {
       // Unreadable registry entry: ignore.
@@ -121,4 +127,41 @@ export async function findExternalSessionHolder(
     };
   }
   return null;
+}
+
+/**
+ * Stop an idle `claude --bg` session so the bridge can take the session
+ * over instead of opening a copy. The conversation is kept by the CLI
+ * (`claude stop` only ends the process). Resolves true once the process is
+ * gone.
+ */
+export async function stopIdleBackgroundHolder(
+  holder: ExternalSessionHolder,
+  deps: {
+    run?: (args: string[]) => Promise<void>;
+    isAlive?: (pid: number) => boolean;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<boolean> {
+  if (holder.kind !== "background" || holder.status !== "idle" || !holder.jobId) {
+    return false;
+  }
+  const run =
+    deps.run ??
+    (async (args: string[]) => {
+      await execFileAsync("claude", args, { timeout: 30_000, encoding: "utf-8" });
+    });
+  const isAlive = deps.isAlive ?? defaultIsAlive;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  try {
+    await run(["stop", holder.jobId]);
+  } catch (err) {
+    console.warn(`[session-holders] claude stop ${holder.jobId} failed:`, err);
+    return false;
+  }
+  for (let i = 0; i < 40; i++) {
+    if (!isAlive(holder.pid)) return true;
+    await sleep(250);
+  }
+  return !isAlive(holder.pid);
 }

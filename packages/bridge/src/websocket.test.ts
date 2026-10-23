@@ -20,8 +20,12 @@ import { UploadStore } from "./upload-store.js";
 const { findExternalSessionHolderMock } = vi.hoisted(() => ({
   findExternalSessionHolderMock: vi.fn(async () => null as null | { kind: string; pid: number; description: string }),
 }));
+const { stopIdleBackgroundHolderMock } = vi.hoisted(() => ({
+  stopIdleBackgroundHolderMock: vi.fn(async () => false),
+}));
 vi.mock("./session-holders.js", () => ({
   findExternalSessionHolder: findExternalSessionHolderMock,
+  stopIdleBackgroundHolder: stopIdleBackgroundHolderMock,
 }));
 
 const {
@@ -2611,6 +2615,25 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ...session.process.sendInput.mock.calls,
     ].map((c: unknown[]) => c[0] as string);
     expect(sent.some((t) => t.includes("<bash-input>echo bash-mode-ok</bash-input>") && t.includes("what did it print?"))).toBe(true);
+    bridge.close();
+  });
+
+  it("takes over an idle background session instead of forking it", async () => {
+    getSessionHistoryMock.mockResolvedValue([]);
+    findExternalSessionHolderMock.mockResolvedValueOnce({ kind: "background", pid: 88, status: "idle", jobId: "abcd1234", description: "bg" });
+    stopIdleBackgroundHolderMock.mockResolvedValueOnce(true);
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const manager = (bridge as any).sessionManager;
+    const createSpy = vi.spyOn(manager, "create");
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    await (bridge as any).handleClientMessage(
+      { type: "resume_session", sessionId: "claude-idle-bg", projectPath: "/tmp/project-a" },
+      ws,
+    );
+    await vi.waitFor(() => expect(manager.list().length).toBe(1));
+    expect(createSpy.mock.calls[0]?.[1]?.forkSession).toBeFalsy();
+    const sends = ws.send.mock.calls.map((c: unknown[]) => JSON.parse(c[0] as string));
+    expect(sends.some((m: any) => m.errorCode === "session_forked_from_held")).toBe(false);
     bridge.close();
   });
 

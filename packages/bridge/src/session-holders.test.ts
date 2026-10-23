@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { findExternalSessionHolder } from "./session-holders.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { findExternalSessionHolder, stopIdleBackgroundHolder } from "./session-holders.js";
 
 const SESSION = "11111111-2222-4333-8444-555555555555";
 
@@ -83,5 +83,27 @@ describe("findExternalSessionHolder", () => {
       platform: "linux",
     });
     expect(failing).toBeNull();
+  });
+});
+
+describe("stopIdleBackgroundHolder", () => {
+  it("stops only idle background holders and waits for the process to exit", async () => {
+    const run = vi.fn(async () => {});
+    let alive = true;
+    const ok = await stopIdleBackgroundHolder(
+      { kind: "background", pid: 5, status: "idle", jobId: "abcd1234", description: "x" },
+      { run, isAlive: () => { const a = alive; alive = false; return a; }, sleep: async () => {} },
+    );
+    expect(ok).toBe(true);
+    expect(run).toHaveBeenCalledWith(["stop", "abcd1234"]);
+
+    const busy = await stopIdleBackgroundHolder(
+      { kind: "background", pid: 5, status: "busy", jobId: "abcd1234", description: "x" },
+      { run },
+    );
+    expect(busy).toBe(false);
+    const cli = await stopIdleBackgroundHolder({ kind: "cli", pid: 6, description: "x" }, { run });
+    expect(cli).toBe(false);
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });

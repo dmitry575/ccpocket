@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
 import { authenticateRequest } from "./auth.js";
 import type { DeviceTokenStore } from "./device-tokens.js";
-import { findExternalSessionHolder } from "./session-holders.js";
+import { findExternalSessionHolder, stopIdleBackgroundHolder } from "./session-holders.js";
 import { sessionNames } from "./session-names.js";
 import { textPreview } from "./text-preview.js";
 import { consumeFinderProof, verifyFinderSocketProof, revealInFinder } from "./finder-reveal.js";
@@ -5953,9 +5953,19 @@ export class BridgeWebSocketServer {
             // anyway). Checked here, after the resume operation is
             // registered, so concurrent resume requests still coalesce.
             let forkSession = msg.forkSession === true;
-            const holder = forkSession
+            let holder = forkSession
               ? null
               : await findExternalSessionHolder(claudeSessionId);
+            // An idle `claude --bg` session is taken over: stop its process
+            // and continue the original here, so there is exactly one live
+            // process for the session (model changes, other agents'
+            // SendMessage and the app all reach the same place).
+            if (holder && (await stopIdleBackgroundHolder(holder))) {
+              console.log(
+                `[ws] resume_session: stopped idle ${holder.description} to take over ${claudeSessionId}`,
+              );
+              holder = null;
+            }
             if (holder) {
               // The Agent SDK cannot attach to a session another process
               // drives (background sessions fail with
