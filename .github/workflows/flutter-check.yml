@@ -37,7 +37,8 @@ jobs:
         run: |
           TESTS="${{ github.event.inputs.tests }}"
           if [ -z "$TESTS" ] && [ "${{ github.event_name }}" = "push" ]; then
-            TESTS="test/workspace_shell_screen_test.dart"
+            # Tests covering the fork's own UI changes.
+            TESTS="test/workspace_shell_screen_test.dart test/release_error_widget_test.dart"
           fi
           if [ -z "$TESTS" ]; then
             flutter test
