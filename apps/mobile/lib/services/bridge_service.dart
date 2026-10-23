@@ -958,10 +958,26 @@ class BridgeService implements BridgeServiceBase {
                 _gitStatusResultController.add(msg);
               case GitRemoteStatusResultMessage():
                 _gitRemoteStatusResultController.add(msg);
-              case ArchiveResultMessage(:final success):
+              case ArchiveResultMessage(success: final success, sessionId: final archivedId):
                 if (success) {
-                  // Refresh the recent sessions list to reflect the archived session
-                  requestRecentSessions();
+                  // Drop the archived session from the list already loaded
+                  // instead of re-requesting page one: a refetch collapsed
+                  // everything the user had expanded with "Show more". The
+                  // bridge list loses the same entry, so pagination offsets
+                  // (based on _recentSessions.length) stay aligned.
+                  final before = _recentSessions.length;
+                  _recentSessions = _recentSessions
+                      .where((s) => s.sessionId != archivedId)
+                      .toList();
+                  if (_recentSessions.length != before) {
+                    _recentSessionsController.add(_recentSessions);
+                  } else {
+                    // Unarchive (or an id we did not have): refresh, keeping
+                    // the amount the user had loaded.
+                    requestRecentSessions(
+                      limit: before < 20 ? 20 : before,
+                    );
+                  }
                 }
               case WorktreeRemovedMessage():
                 final accepted = _acceptWorktreeRemovedResponse(msg);
