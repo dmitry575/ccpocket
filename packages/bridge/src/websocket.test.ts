@@ -2577,6 +2577,43 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("runs '!command' in bash mode and hands the output to Claude with the next message", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const manager = (bridge as any).sessionManager;
+    const id = manager.create(process.cwd());
+    const session = manager.get(id);
+    const broadcast = vi.spyOn(bridge as any, "broadcastSessionMessage");
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+
+    await (bridge as any).handleClientMessage(
+      { type: "input", sessionId: id, text: "!echo bash-mode-ok" },
+      ws,
+    );
+    await vi.waitFor(() =>
+      expect(
+        broadcast.mock.calls.some(
+          (c: unknown[]) =>
+            (c[1] as any)?.type === "assistant" &&
+            JSON.stringify((c[1] as any).message.content).includes("bash-mode-ok"),
+        ),
+      ).toBe(true),
+    );
+    // Nothing went to the model yet.
+    expect(session.process.sendInput).not.toHaveBeenCalled();
+    expect(session.process.dispatchInput ?? vi.fn()).not.toHaveBeenCalled();
+
+    await (bridge as any).handleClientMessage(
+      { type: "input", sessionId: id, text: "what did it print?" },
+      ws,
+    );
+    const sent = [
+      ...(session.process.dispatchInput?.mock?.calls ?? []),
+      ...session.process.sendInput.mock.calls,
+    ].map((c: unknown[]) => c[0] as string);
+    expect(sent.some((t) => t.includes("<bash-input>echo bash-mode-ok</bash-input>") && t.includes("what did it print?"))).toBe(true);
+    bridge.close();
+  });
+
   it("opens a fork when the session is held by another claude process", async () => {
     getSessionHistoryMock.mockResolvedValue([]);
     findExternalSessionHolderMock.mockResolvedValueOnce({ kind: "background", pid: 77, description: 'claude --bg session "job" (pid 77)' });

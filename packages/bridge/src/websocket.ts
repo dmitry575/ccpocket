@@ -3227,7 +3227,7 @@ export class BridgeWebSocketServer {
           });
           return;
         }
-        const text = msg.text;
+        let text = msg.text;
         const clientMessageId = msg.clientMessageId;
         const baseSeq = msg.baseSeq;
         const codexSkills = msg.skills ?? (msg.skill ? [msg.skill] : []);
@@ -3284,6 +3284,43 @@ export class BridgeWebSocketServer {
             clientMessageId,
             reason: "conflict",
           });
+          break;
+        }
+
+        // Fork: terminal-style bash mode. "!cmd" runs in the session's
+        // directory on the bridge, the output is shown in the chat, and the
+        // command plus output reach Claude with the next normal message
+        // (as the CLI does). Nothing is sent to the model now.
+        if (
+          session.provider === "claude" &&
+          images.length === 0 &&
+          !msg.imageId &&
+          /^!\s*\S/.test(text)
+        ) {
+          const bashEntry = this.sessionManager.appendHistory(session.id, {
+            type: "user_input",
+            text,
+            ...(clientMessageId ? { clientMessageId } : {}),
+            timestamp: new Date().toISOString(),
+          } as ServerMessage);
+          this.send(ws, {
+            type: "input_ack",
+            sessionId: session.id,
+            ...(clientMessageId ? { clientMessageId } : {}),
+            acceptedSeq: bashEntry?.seq ?? session.historyRevision,
+            queued: false,
+          });
+          if (bashEntry) {
+            this.broadcastSessionMessage(
+              session.id,
+              {
+                ...bashEntry.message,
+                historySeq: bashEntry.seq,
+              } as ServerMessage & { historySeq: number },
+              ws,
+            );
+          }
+          void this.runBashModeCommand(session, text.replace(/^!\s*/, ""));
           break;
         }
 
@@ -3449,6 +3486,7 @@ export class BridgeWebSocketServer {
 
         // Claude Code input path — enqueue first, then interrupt if busy
         const claudeProc = session.process as SdkProcess;
+        text = this.withPendingBashContext(session.id, text);
         let wasQueued = false;
         let shouldInterrupt = false;
         if (images.length > 0) {
@@ -8447,6 +8485,76 @@ export class BridgeWebSocketServer {
    * Supports both running sessions (by bridge session id) and recent sessions
    * (by provider session id, i.e. claudeSessionId or codex threadId).
    */
+  /** Bash-mode results waiting to be handed to Claude with the next message. */
+  private pendingBashContext = new Map<string, string[]>();
+
+  private withPendingBashContext(sessionId: string, text: string): string {
+    const pending = this.pendingBashContext.get(sessionId);
+    if (!pending || pending.length === 0) return text;
+    this.pendingBashContext.delete(sessionId);
+    return `${pending.join("\n\n")}\n\n${text}`;
+  }
+
+  /**
+   * Run a "!command" for a Claude session (fork bash mode) and show the
+   * result in the chat as a separate message.
+   */
+  private async runBashModeCommand(session: SessionInfo, command: string): Promise<void> {
+    const cwd = session.worktreePath ?? session.projectPath;
+    const limit = 30_000;
+    const clip = (value: string) =>
+      value.length > limit
+        ? `${value.slice(0, limit)}\n… (${value.length - limit} more characters cut)`
+        : value;
+    let stdout = "";
+    let stderr = "";
+    let exitCode = 0;
+    try {
+      const result = await promisify(execFile)("bash", ["-lc", command], {
+        cwd,
+        timeout: 120_000,
+        maxBuffer: 8 * 1024 * 1024,
+        encoding: "utf-8",
+      });
+      stdout = result.stdout;
+      stderr = result.stderr;
+    } catch (err) {
+      const e = err as { stdout?: string; stderr?: string; code?: number | string; killed?: boolean; message?: string };
+      stdout = e.stdout ?? "";
+      stderr = e.stderr ?? (e.message ?? String(err));
+      exitCode = typeof e.code === "number" ? e.code : 1;
+      if (e.killed) stderr += "\n(timed out after 120 s)";
+    }
+    stdout = clip(stdout.replace(/\s+$/, ""));
+    stderr = clip(stderr.replace(/\s+$/, ""));
+
+    const body = [stdout, stderr].filter((part) => part.length > 0).join("\n");
+    const fence = body.includes("```") ? "~~~" : "```";
+    const shown =
+      `\`$ ${command.replace(/`/g, "'")}\`` +
+      (exitCode !== 0 ? `  (exit code ${exitCode})` : "") +
+      (body ? `\n${fence}\n${body}\n${fence}` : "\n_(no output)_");
+    const message = {
+      type: "assistant",
+      message: {
+        id: `bash-${randomUUID()}`,
+        role: "assistant",
+        content: [{ type: "text", text: shown }],
+        model: "bash",
+      },
+    } as unknown as ServerMessage;
+    this.sessionManager.appendHistory(session.id, message);
+    this.broadcastSessionMessage(session.id, message);
+
+    const context =
+      `<bash-input>${command}</bash-input>\n` +
+      `<bash-stdout>${stdout}</bash-stdout>\n` +
+      `<bash-stderr>${stderr}</bash-stderr>`;
+    const queue = this.pendingBashContext.get(session.id) ?? [];
+    queue.push(context);
+    this.pendingBashContext.set(session.id, queue.slice(-10));
+  }
+
   private async handleRenameSession(
     ws: WebSocket,
     sessionId: string,
