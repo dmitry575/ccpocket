@@ -5964,6 +5964,11 @@ export class BridgeWebSocketServer {
               console.log(
                 `[ws] resume_session: stopped idle ${holder.description} to take over ${claudeSessionId}`,
               );
+              // Keep the name the background session was known by (often
+              // only in its registry entry, not in the transcript).
+              if (holder.name && !sessionNames.get(claudeSessionId)) {
+                sessionNames.set(claudeSessionId, holder.name);
+              }
               holder = null;
             }
             if (holder) {
@@ -8477,6 +8482,13 @@ export class BridgeWebSocketServer {
     if (!session || !cliSessionId) return;
     try {
       if (provider === "claude") {
+        // A name the user set from the app wins over the transcript's
+        // custom-title, which a CLI process may have rewritten since.
+        const pinned = sessionNames.get(cliSessionId);
+        if (pinned) {
+          session.name = pinned;
+          return;
+        }
         const name = await getClaudeSessionName(projectPath, cliSessionId);
         if (name) session.name = name;
       } else if (provider === "codex") {

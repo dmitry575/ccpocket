@@ -23,6 +23,8 @@ export interface ExternalSessionHolder {
   status?: string;
   /** Background sessions only: short id accepted by `claude stop`. */
   jobId?: string;
+  /** Background sessions only: display name from the registry, if meaningful. */
+  name?: string;
 }
 
 export interface SessionHolderDeps {
@@ -83,6 +85,12 @@ function readBackgroundRegistry(
         description: `claude --bg session "${name}" (pid ${pid})`,
         ...(typeof entry.status === "string" ? { status: entry.status } : {}),
         jobId: typeof entry.jobId === "string" ? entry.jobId : sessionId.slice(0, 8),
+        ...(typeof entry.name === "string" &&
+        entry.name.trim() &&
+        entry.name !== entry.jobId &&
+        !sessionId.startsWith(entry.name)
+          ? { name: entry.name.trim() }
+          : {}),
       };
     } catch {
       // Unreadable registry entry: ignore.
