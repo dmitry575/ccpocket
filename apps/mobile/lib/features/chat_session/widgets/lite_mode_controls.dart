@@ -78,8 +78,17 @@ class LiteModeActivityBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return BlocSelector<SettingsCubit, SettingsState, bool>(
       selector: (state) => state.liteModeForSession(sessionId),
-      builder: (context, enabled) =>
-          enabled ? const _ActivityStatus() : const SizedBox.shrink(),
+      builder: (context, enabled) {
+        if (enabled) return const _ActivityStatus();
+        // Fork: outside lite mode show the same terminal-style line while
+        // the agent works ("Running · Observed 35s · Bash: git status") and
+        // hide it when the session is idle.
+        return BlocSelector<ChatSessionCubit, ChatSessionState, bool>(
+          selector: (state) => state.status != ProcessStatus.idle,
+          builder: (context, active) =>
+              active ? const _ActivityStatus() : const SizedBox.shrink(),
+        );
+      },
     );
   }
 }

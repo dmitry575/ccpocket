@@ -381,10 +381,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _activityObservedSince ??= now;
       if (msg case AssistantServerMessage(:final message)) {
         final tools = message.content.whereType<ToolUseContent>();
-        _latestActivityTool = tools.lastOrNull?.name;
-      } else if (msg is ToolResultMessage ||
-          msg is StreamDeltaMessage ||
-          msg is ThinkingDeltaMessage) {
+        final last = tools.lastOrNull;
+        _latestActivityTool = last == null ? null : describeToolActivity(last);
+      } else if (msg is ThinkingDeltaMessage) {
+        _latestActivityTool = 'Thinking';
+      } else if (msg is ToolResultMessage || msg is StreamDeltaMessage) {
         _latestActivityTool = null;
       }
     }
@@ -2827,4 +2828,34 @@ class _SessionSettingsHelper {
       // SharedPreferences may not be available in test environments.
     }
   }
+}
+
+/// Terminal-style one-line description of a tool call, e.g.
+/// "Bash: git status" or "Edit: main.dart" (fork addition for the activity line).
+String describeToolActivity(ToolUseContent tool) {
+  String clip(String value, [int max = 80]) {
+    final line = value.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return line.length > max ? '${line.substring(0, max)}…' : line;
+  }
+
+  String? str(String key) {
+    final v = tool.input[key];
+    return v is String && v.trim().isNotEmpty ? v : null;
+  }
+
+  String base(String path) {
+    final parts = path.split(RegExp(r'[\\/]'));
+    return parts.isEmpty ? path : parts.last;
+  }
+
+  final detail =
+      str('command') ??
+      (str('file_path') != null ? base(str('file_path')!) : null) ??
+      (str('notebook_path') != null ? base(str('notebook_path')!) : null) ??
+      str('pattern') ??
+      str('url') ??
+      str('query') ??
+      str('description') ??
+      str('prompt');
+  return detail == null ? tool.name : '${tool.name}: ${clip(detail)}';
 }
