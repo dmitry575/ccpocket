@@ -5336,6 +5336,20 @@ export class BridgeWebSocketServer {
         break;
       }
 
+      case "unarchive_session": {
+        // Fork addition: the archive is a bridge-side marker list, so undoing
+        // it needs no provider call. The client refreshes its recent list.
+        const restored = await this.archiveStore.unarchive(msg.sessionId);
+        this.send(ws, {
+          type: "archive_result",
+          sessionId: msg.sessionId,
+          success: restored,
+          unarchived: true,
+          ...(restored ? {} : { error: "Session is not archived" }),
+        } as Record<string, unknown>);
+        break;
+      }
+
       case "archive_session": {
         const { sessionId, provider, projectPath } = msg;
         const archiveProjectPath = resolvePlatformPath(

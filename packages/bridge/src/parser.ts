@@ -474,6 +474,7 @@ export type ClientMessage =
       provider: Provider;
       projectPath: string;
     }
+  | { type: "unarchive_session"; sessionId: string }
   | { type: "refresh_branch"; sessionId: string }
   // ---- Git Operations (Phase 1-3) ----
   | {
@@ -2209,6 +2210,9 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (typeof msg.sessionId !== "string") return null;
         if (msg.provider !== "claude" && msg.provider !== "codex") return null;
         if (typeof msg.projectPath !== "string") return null;
+        break;
+      case "unarchive_session":
+        if (typeof msg.sessionId !== "string") return null;
         break;
       default:
         return null;

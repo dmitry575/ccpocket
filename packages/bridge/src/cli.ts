@@ -124,6 +124,47 @@ if (parsed.helpRequested) {
     );
     process.exit(1);
   }
+} else if (parsed.command === "archive") {
+  // Archived sessions: list | restore <sessionId|prefix> | restore --all
+  import("./archive-store.js")
+    .then(async ({ ArchiveStore }) => {
+      const store = new ArchiveStore();
+      await store.init();
+      const [, action, arg] = parsed.positionals;
+      const entries = store.list();
+      switch (action) {
+        case undefined:
+        case "list":
+          if (entries.length === 0) {
+            console.log("No archived sessions.");
+            break;
+          }
+          for (const e of entries) {
+            console.log(`${e.sessionId}  ${e.provider.padEnd(6)}  ${e.archivedAt}  ${e.projectPath}`);
+          }
+          break;
+        case "restore": {
+          if (hasFlag(parsed, "all")) {
+            for (const e of entries) await store.unarchive(e.sessionId);
+            console.log(`Restored ${entries.length} session(s).`);
+            break;
+          }
+          if (!arg) throw new Error("usage: ccpocket-bridge archive restore <sessionId|prefix> | --all");
+          const matches = entries.filter((e) => e.sessionId === arg || e.sessionId.startsWith(arg));
+          if (matches.length === 0) throw new Error(`No archived session matches ${arg}`);
+          if (matches.length > 1) throw new Error(`Prefix ${arg} matches ${matches.length} sessions; be more specific`);
+          await store.unarchive(matches[0].sessionId);
+          console.log(`Restored ${matches[0].sessionId}; it is back in the recent list (the running bridge picks the change up automatically).`);
+          break;
+        }
+        default:
+          throw new Error(`Unknown archive action "${action}". Use list | restore <id> | restore --all.`);
+      }
+    })
+    .catch((err) => {
+      console.error("archive failed:", err instanceof Error ? err.message : err);
+      process.exit(1);
+    });
 } else if (parsed.command === "devices") {
   // Per-device access tokens: list | add <name> | revoke <id> | rotate <id> | remove <id>
   import("./device-tokens.js")

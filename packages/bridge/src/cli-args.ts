@@ -13,6 +13,7 @@ const BOOLEAN_FLAGS = new Set([
   "json",
   "uninstall",
   "no-mdns",
+  "all",
 ]);
 
 export interface ParsedCliArgs {
