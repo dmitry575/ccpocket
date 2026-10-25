@@ -5,6 +5,14 @@ import { setupProxy } from "./proxy.js";
 import { authenticateRequest, isAuthConfigured, isLoopbackHost, parseRequestUrl } from "./auth.js";
 import { DeviceTokenStore } from "./device-tokens.js";
 import { getSubagentHistory, listSubagentMeta } from "./subagent-history.js";
+import {
+  artifactViewPath,
+  contentTypeFor,
+  listSessionArtifacts,
+  resolveArtifactFile,
+  verifyArtifactToken,
+} from "./artifact-preview.js";
+import { createReadStream } from "node:fs";
 import { BridgeWebSocketServer } from "./websocket.js";
 import { ImageStore } from "./image-store.js";
 import { MediaStore } from "./media-store.js";
@@ -271,6 +279,7 @@ export async function startServer() {
     const needsKey =
       pathname === "/api/subagent" ||
       pathname === "/api/subagents" ||
+      pathname === "/api/artifacts" ||
       pathname === "/usage" ||
       pathname === "/doctor" ||
       // Gallery: list, upload and delete need the key. GET /api/gallery/:id
@@ -333,6 +342,89 @@ export async function startServer() {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: String(err) }));
         });
+      return;
+    }
+
+    // Fork: Artifacts the session published, with signed view paths.
+    // GET /api/artifacts?session=<bridge or Claude session id>
+    if (pathname === "/api/artifacts" && req.method === "GET") {
+      const ref = requestUrl.searchParams.get("session") ?? "";
+      const claudeSessionId = wsServer?.claudeSessionIdFor(ref) ?? ref;
+      if (!claudeSessionId) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "session is required" }));
+        return;
+      }
+      listSessionArtifacts(claudeSessionId)
+        .then((artifacts) => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              artifacts: artifacts.map(({ files, ...a }) => ({
+                ...a,
+                fileName: a.filePath.split("/").pop(),
+                supportingFiles: Object.keys(files).length,
+                ...(a.exists ? { viewPath: artifactViewPath(claudeSessionId, { files, ...a }) } : {}),
+              })),
+            }),
+          );
+        })
+        .catch((err) => {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: String(err) }));
+        });
+      return;
+    }
+
+    // Fork: the artifact files themselves. The signed token in the path
+    // replaces the API key so WebView sub-resource loads work; the page is
+    // served sandboxed (opaque origin) so its scripts cannot use the bridge.
+    // GET /artifact/<token>/<published path>
+    if (pathname.startsWith("/artifact/") && (req.method === "GET" || req.method === "HEAD")) {
+      const [, , token = "", ...restParts] = pathname.split("/");
+      const grant = verifyArtifactToken(token);
+      const notFound = (code: number, message: string) => {
+        res.writeHead(code, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end(message);
+      };
+      if (!grant) {
+        notFound(403, "This preview link has expired. Open the artifact again from the app.");
+        return;
+      }
+      let rest: string;
+      try {
+        rest = restParts.map((p) => decodeURIComponent(p)).join("/");
+      } catch {
+        notFound(400, "Bad path");
+        return;
+      }
+      listSessionArtifacts(grant.sessionId)
+        .then(async (artifacts) => {
+          const artifact = artifacts.find((a) => a.toolUseIds.includes(grant.toolUseId));
+          const file = artifact?.exists ? await resolveArtifactFile(artifact, rest) : null;
+          if (!file) {
+            notFound(404, "Not found");
+            return;
+          }
+          const stream = createReadStream(file);
+          stream.once("error", () => notFound(404, "Not found"));
+          stream.once("open", () => {
+            res.writeHead(200, {
+              "Content-Type": contentTypeFor(file),
+              "Cache-Control": "no-store",
+              "X-Content-Type-Options": "nosniff",
+              "Content-Security-Policy": "sandbox allow-scripts allow-popups allow-forms allow-modals allow-downloads",
+              "Referrer-Policy": "no-referrer",
+            });
+            if (req.method === "HEAD") {
+              stream.destroy();
+              res.end();
+              return;
+            }
+            stream.pipe(res);
+          });
+        })
+        .catch(() => notFound(500, "Error"));
       return;
     }
 
