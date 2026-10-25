@@ -4717,6 +4717,49 @@ class BridgeService implements BridgeServiceBase {
     }
   }
 
+  /// Fork: Artifacts the session published (`GET /api/artifacts`), newest
+  /// first. Each entry with a local source has `viewUrl`, a signed link the
+  /// bridge serves without claude.ai. Status 404 means an older bridge.
+  Future<({int status, List<Map<String, dynamic>> artifacts})> fetchArtifacts(
+    String session,
+  ) async {
+    final baseUrl = httpBaseUrl;
+    if (baseUrl == null) {
+      return (status: 0, artifacts: <Map<String, dynamic>>[]);
+    }
+
+    try {
+      final uri = Uri.parse(
+        '$baseUrl/api/artifacts',
+      ).replace(queryParameters: {'session': session});
+      final response = await http
+          .get(uri, headers: _bridgeAuthHeaders)
+          .timeout(const Duration(seconds: 15));
+      if (response.statusCode != 200) {
+        return (
+          status: response.statusCode,
+          artifacts: <Map<String, dynamic>>[],
+        );
+      }
+      final json = jsonDecode(utf8.decode(response.bodyBytes));
+      final list = json is Map<String, dynamic> && json['artifacts'] is List
+          ? (json['artifacts'] as List)
+                .whereType<Map<String, dynamic>>()
+                .map((a) {
+                  final path = a['viewPath'];
+                  return {
+                    ...a,
+                    if (path is String) 'viewUrl': '$baseUrl$path',
+                  };
+                })
+                .toList()
+          : <Map<String, dynamic>>[];
+      return (status: 200, artifacts: list);
+    } catch (_) {
+      return (status: 0, artifacts: <Map<String, dynamic>>[]);
+    }
+  }
+
   /// Delete a gallery image by ID.
   /// Returns true on success, false on failure.
   /// On success, immediately removes the image from the local cache

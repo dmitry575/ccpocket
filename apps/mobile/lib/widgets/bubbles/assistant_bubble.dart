@@ -21,6 +21,7 @@ import '../../features/file_peek/file_path_syntax.dart';
 import '../../features/file_peek/markdown_link_handler.dart';
 import '../../features/chat_session/state/chat_session_cubit.dart';
 import '../../features/subagent/subagent_screen.dart';
+import '../../features/artifact/artifacts_button.dart';
 import 'error_bubble.dart';
 import '../plan_detail_sheet.dart';
 import '../google_search_text_selection.dart';
@@ -448,7 +449,14 @@ class _ToolUseTileState extends State<ToolUseTile> {
   /// Fork: Agent/Task cards open the subagent's transcript. Null when the
   /// tile is shown outside a chat session (no cubit to take the id from).
   VoidCallback? _subagentOpener() {
-    if (widget.name != 'Agent' && widget.name != 'Task') return null;
+    final isAgent = widget.name == 'Agent' || widget.name == 'Task';
+    // Fork: an Artifact publish opens the in-app preview the same way.
+    final isArtifact =
+        widget.name == 'Artifact' &&
+        widget.input['file_path'] is String &&
+        (widget.input['action'] ?? 'publish') == 'publish' &&
+        widget.input['asset'] != true;
+    if (!isAgent && !isArtifact) return null;
     if (widget.toolUseId.isEmpty) return null;
     final String sessionId;
     try {
@@ -457,6 +465,13 @@ class _ToolUseTileState extends State<ToolUseTile> {
       return null;
     }
     if (sessionId.isEmpty) return null;
+    if (isArtifact) {
+      return () => openSessionArtifact(
+        context,
+        sessionId: sessionId,
+        toolUseId: widget.toolUseId,
+      );
+    }
     return () => SubagentScreen.open(
       context,
       sessionId: sessionId,
@@ -780,7 +795,7 @@ class _OpenSubagentButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = Theme.of(context).colorScheme.primary;
     return Tooltip(
-      message: 'Open subagent',
+      message: 'Open',
       child: InkWell(
         key: const ValueKey('open_subagent_button'),
         onTap: onPressed,
