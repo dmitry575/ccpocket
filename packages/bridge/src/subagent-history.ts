@@ -2,6 +2,7 @@ import { open, readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { getSubagentMessages } from "@anthropic-ai/claude-agent-sdk";
 import { findSessionJsonlPath } from "./sessions-index.js";
+import { CursorCache, readNewLines } from "./incremental-lines.js";
 
 /**
  * Fork: read-only view of a subagent's transcript for the app.
@@ -119,50 +120,56 @@ const NOTIFICATION_RE =
  */
 export function parentOutcomes(transcript: string): Map<string, SubagentState> {
   const outcomes = new Map<string, SubagentState>();
-  for (const line of transcript.split("\n")) {
-    if (!line) continue;
-    if (line.includes("<task-notification>")) {
-      // JSON-escaped newlines stay as "\n" here; the pattern skips them.
-      for (const m of line.replaceAll("\\n", "\n").matchAll(NOTIFICATION_RE)) {
-        const status = m[2];
-        outcomes.set(
-          m[1],
-          status === "completed" ? "done" : status === "failed" ? "failed" : status === "pending" || status === "running" ? "running" : "interrupted",
-        );
-      }
-    }
-    if (!line.includes('"tool_result"')) continue;
-    let entry: { type?: string; message?: { content?: unknown } };
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (entry.type !== "user" || !Array.isArray(entry.message?.content)) continue;
-    for (const b of entry.message.content as Array<Record<string, unknown>>) {
-      if (b?.type !== "tool_result" || typeof b.tool_use_id !== "string") continue;
-      const text = textOf(b.content);
-      // A background launch answers at once; its end comes as a notification.
-      if (text.startsWith("Async agent launched")) continue;
-      if (!outcomes.has(b.tool_use_id)) {
-        outcomes.set(b.tool_use_id, b.is_error === true ? "failed" : "done");
-      }
-    }
-  }
+  for (const line of transcript.split("\n")) addParentOutcome(line, outcomes);
   return outcomes;
 }
 
-const outcomeCache = new Map<string, { mtimeMs: number; size: number; outcomes: Map<string, SubagentState> }>();
+/** One transcript line of {@link parentOutcomes}, for incremental reads. */
+export function addParentOutcome(line: string, outcomes: Map<string, SubagentState>): void {
+  if (!line) return;
+  if (line.includes("<task-notification>")) {
+    // JSON-escaped newlines stay as "\n" here; the pattern skips them.
+    for (const m of line.replaceAll("\\n", "\n").matchAll(NOTIFICATION_RE)) {
+      const status = m[2];
+      outcomes.set(
+        m[1],
+        status === "completed" ? "done" : status === "failed" ? "failed" : status === "pending" || status === "running" ? "running" : "interrupted",
+      );
+    }
+  }
+  if (!line.includes('"tool_result"')) return;
+  let entry: { type?: string; message?: { content?: unknown } };
+  try {
+    entry = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (entry.type !== "user" || !Array.isArray(entry.message?.content)) return;
+  for (const b of entry.message.content as Array<Record<string, unknown>>) {
+    if (b?.type !== "tool_result" || typeof b.tool_use_id !== "string") continue;
+    const text = textOf(b.content);
+    // A background launch answers at once; its end comes as a notification.
+    if (text.startsWith("Async agent launched")) continue;
+    if (!outcomes.has(b.tool_use_id)) {
+      outcomes.set(b.tool_use_id, b.is_error === true ? "failed" : "done");
+    }
+  }
+}
+
+// Parent transcripts grow while the session runs; only appended lines are
+// parsed on each poll (see incremental-lines.ts).
+const outcomeCursors = new CursorCache<Map<string, SubagentState>>(50);
 
 async function cachedParentOutcomes(transcript: string): Promise<Map<string, SubagentState>> {
   try {
-    const info = await stat(transcript);
-    const cached = outcomeCache.get(transcript);
-    if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached.outcomes;
-    const outcomes = parentOutcomes(await readFile(transcript, "utf8"));
-    if (outcomeCache.size > 50) outcomeCache.clear();
-    outcomeCache.set(transcript, { mtimeMs: info.mtimeMs, size: info.size, outcomes });
-    return outcomes;
+    const cursor = await readNewLines(
+      transcript,
+      outcomeCursors.get(transcript),
+      () => new Map<string, SubagentState>(),
+      addParentOutcome,
+    );
+    outcomeCursors.set(transcript, cursor);
+    return cursor.value;
   } catch {
     return new Map();
   }

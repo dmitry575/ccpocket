@@ -3,6 +3,7 @@ import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { findSessionJsonlPath } from "./sessions-index.js";
+import { CursorCache, readNewLines } from "./incremental-lines.js";
 
 /**
  * Fork: preview of Artifacts a session published, without claude.ai.
@@ -42,18 +43,36 @@ function textOf(content: unknown): string {
 
 /** Artifact publishes found in transcript text (one JSON entry per line). */
 export function artifactsFromTranscript(transcript: string): Omit<ArtifactRecord, "exists" | "title">[] {
-  const uses = new Map<string, { input: Record<string, unknown>; cwd?: string; ts?: string }>();
-  const byKey = new Map<string, Omit<ArtifactRecord, "exists" | "title">>();
-  for (const line of transcript.split("\n")) {
-    if (!line.includes('"Artifact"') && !line.includes("Published ")) continue;
+  const scan = newArtifactScan();
+  for (const line of transcript.split("\n")) scanArtifactLine(line, scan);
+  return [...scan.byKey.values()];
+}
+
+type FoundArtifact = Omit<ArtifactRecord, "exists" | "title">;
+
+/** Parse state of one transcript, kept between incremental reads. */
+export interface ArtifactScan {
+  uses: Map<string, { input: Record<string, unknown>; cwd?: string; ts?: string }>;
+  byKey: Map<string, FoundArtifact>;
+}
+
+export function newArtifactScan(): ArtifactScan {
+  return { uses: new Map(), byKey: new Map() };
+}
+
+/** One transcript line of {@link artifactsFromTranscript}. */
+export function scanArtifactLine(line: string, scan: ArtifactScan): void {
+  const { uses, byKey } = scan;
+  {
+    if (!line.includes('"Artifact"') && !line.includes("Published ")) return;
     let entry: { type?: string; cwd?: string; timestamp?: string; message?: { content?: unknown } };
     try {
       entry = JSON.parse(line);
     } catch {
-      continue;
+      return;
     }
     const content = entry.message?.content;
-    if (!Array.isArray(content)) continue;
+    if (!Array.isArray(content)) return;
     for (const b of content as Array<Record<string, unknown>>) {
       if (entry.type === "assistant" && b.type === "tool_use" && b.name === "Artifact") {
         const input = (b.input ?? {}) as Record<string, unknown>;
@@ -90,7 +109,6 @@ export function artifactsFromTranscript(transcript: string): Omit<ArtifactRecord
       }
     }
   }
-  return [...byKey.values()];
 }
 
 async function titleOf(path: string): Promise<string | undefined> {
@@ -129,6 +147,8 @@ export function listSessionArtifacts(claudeSessionId: string): Promise<ArtifactR
   return value;
 }
 
+const scanCursors = new CursorCache<ArtifactScan>(300);
+
 async function scanSessionArtifacts(claudeSessionId: string): Promise<ArtifactRecord[]> {
   const transcript = await findSessionJsonlPath(claudeSessionId);
   if (!transcript) return [];
@@ -139,21 +159,25 @@ async function scanSessionArtifacts(claudeSessionId: string): Promise<ArtifactRe
   } catch {
     // no subagents
   }
-  const merged = new Map<string, Omit<ArtifactRecord, "exists" | "title">>();
+  const merged = new Map<string, FoundArtifact>();
   for (const p of paths) {
-    let text: string;
+    let found: FoundArtifact[];
     try {
-      text = await readFile(p, "utf8");
+      // Only lines appended since the previous poll are parsed.
+      const cursor = await readNewLines(p, scanCursors.get(p), newArtifactScan, scanArtifactLine);
+      scanCursors.set(p, cursor);
+      found = [...cursor.value.byKey.values()];
     } catch {
       continue;
     }
-    for (const a of artifactsFromTranscript(text)) {
+    for (const a of found) {
       const key = a.url ?? a.filePath;
       const prev = merged.get(key);
+      // Never mutate `a`/`prev` in place: they live in the cursor cache.
       if (!prev || (a.publishedAt ?? "") >= (prev.publishedAt ?? "")) {
         merged.set(key, prev ? { ...a, toolUseIds: [...prev.toolUseIds, ...a.toolUseIds] } : a);
       } else {
-        prev.toolUseIds.push(...a.toolUseIds);
+        merged.set(key, { ...prev, toolUseIds: [...prev.toolUseIds, ...a.toolUseIds] });
       }
     }
   }
