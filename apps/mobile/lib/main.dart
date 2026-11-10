@@ -299,6 +299,9 @@ void main() async {
               machineManagerService,
               sshStartupService,
               refreshLatestBridgeVersionOnInit: true,
+              // Fork: the bridge is deployed from the fork, not from npm, so
+              // upstream's npm release must not show up as an update.
+              checkLatestBridgeVersion: false,
             ),
           ),
           BlocProvider<SettingsCubit>(

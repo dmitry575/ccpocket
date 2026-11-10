@@ -64,19 +64,22 @@ class MachineManagerCubit extends Cubit<MachineManagerState> {
       BridgeLatestVersionService.cacheDuration;
 
   DateTime? _lastLatestBridgeVersionRefreshAttemptAt;
+  final bool _checkLatestBridgeVersion;
 
   MachineManagerCubit(
     this._service,
     this._sshService, {
     BridgeLatestVersionService? latestVersionService,
     bool refreshLatestBridgeVersionOnInit = false,
+    bool checkLatestBridgeVersion = true,
     Duration? healthTimeout,
     Duration? startHealthTimeout,
     Duration? updateHealthTimeout,
     Duration healthRetryDelay = _defaultHealthRetryDelay,
     Duration postStartHealthRequestTimeout =
         _defaultPostStartHealthRequestTimeout,
-  }) : _latestVersionService =
+  }) : _checkLatestBridgeVersion = checkLatestBridgeVersion,
+       _latestVersionService =
            latestVersionService ?? BridgeLatestVersionService(),
        _ownsLatestVersionService = latestVersionService == null,
        _startHealthTimeout =
@@ -137,6 +140,17 @@ class MachineManagerCubit extends Cubit<MachineManagerState> {
   /// Refresh the latest Bridge version published on npm.
   Future<void> refreshLatestBridgeVersion({bool forceRefresh = false}) async {
     _lastLatestBridgeVersionRefreshAttemptAt = DateTime.now();
+    // Fork: the bridge is deployed from the fork's branch, not from npm;
+    // comparing it with upstream's npm release only suggested replacing it.
+    if (!_checkLatestBridgeVersion) {
+      emit(
+        state.copyWith(
+          isCheckingLatestBridgeVersion: false,
+          latestBridgeVersionError: null,
+        ),
+      );
+      return;
+    }
     emit(
       state.copyWith(
         isCheckingLatestBridgeVersion: true,

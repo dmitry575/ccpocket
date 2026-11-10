@@ -74,7 +74,8 @@ class MethodChannelAppUpdateGateway implements AppUpdateGateway {
 /// been configured yet, the service falls back to GitHub Releases so the
 /// current banner UX keeps working during rollout.
 class AppUpdateService {
-  static const _owner = 'K9i-0';
+  // Fork: look for app updates in the fork's releases, not upstream's.
+  static const _owner = 'dmitry575';
   static const _repo = 'ccpocket';
   static const _dismissedVersionKey = 'app_update_dismissed_version';
   static const _lastCheckKey = 'app_update_last_check';
@@ -313,11 +314,12 @@ class AppUpdateService {
       final htmlUrl = release['html_url'] as String?;
       if (tagName == null ||
           htmlUrl == null ||
-          !tagName.startsWith('macos/v')) {
+          !(tagName.startsWith('macos/v') || tagName.startsWith('release/v'))) {
         continue;
       }
 
-      final fullVersion = tagName.substring('macos/v'.length);
+      // Fork: all-platforms releases are tagged release/v<version>+<build>.
+      final fullVersion = tagName.substring(tagName.indexOf('/v') + 2);
       final version = fullVersion.split('+').first;
       final assets = release['assets'] as List<dynamic>? ?? const [];
       final expectedAssetName = 'CC-Pocket-macos-v$version.dmg';

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../l10n/app_localizations.dart';
@@ -161,6 +162,17 @@ class _MachineEditSheetState extends State<MachineEditSheet> {
       text: widget.existingSshPassword ?? '',
     );
     _sshPrivateKeyController = TextEditingController();
+
+    // Fork: the web build is served by the bridge itself (/app/), so a new
+    // machine defaults to the page's own host and port. An https page cannot
+    // open a plain ws:// socket, hence secure-only.
+    if (kIsWeb && m == null && Uri.base.host.isNotEmpty) {
+      _hostController.text = Uri.base.host;
+      _portController.text = Uri.base.port.toString();
+      if (Uri.base.scheme == 'https') {
+        _connectionMode = BridgeConnectionMode.secureOnly;
+      }
+    }
 
     if (m != null) {
       _connectionMode = m.connectionMode;
