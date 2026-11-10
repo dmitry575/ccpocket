@@ -13,6 +13,8 @@ import {
   verifyArtifactToken,
 } from "./artifact-preview.js";
 import { createReadStream } from "node:fs";
+import { stat as statFile } from "node:fs/promises";
+import { WEB_APP_PREFIX, isEntryFile, resolveWebAppFile, webAppContentType, webAppDir } from "./web-app.js";
 import { BridgeWebSocketServer } from "./websocket.js";
 import { ImageStore } from "./image-store.js";
 import { MediaStore } from "./media-store.js";
@@ -425,6 +427,49 @@ export async function startServer() {
           });
         })
         .catch(() => notFound(500, "Error"));
+      return;
+    }
+
+    // Fork: the Flutter web build of the app (open in a browser, add to the
+    // iPhone home screen). Public static files; the app asks for the key.
+    if ((pathname === WEB_APP_PREFIX || pathname.startsWith(`${WEB_APP_PREFIX}/`)) && (req.method === "GET" || req.method === "HEAD")) {
+      if (pathname === WEB_APP_PREFIX) {
+        res.writeHead(301, { Location: `${WEB_APP_PREFIX}/` });
+        res.end();
+        return;
+      }
+      resolveWebAppFile(webAppDir(), pathname)
+        .then(async (hit) => {
+          if (!hit) {
+            res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+            res.end("The web app is not installed on this bridge (deploy/install-web.sh).");
+            return;
+          }
+          const info = await statFile(hit.file);
+          const lastModified = info.mtime.toUTCString();
+          const since = req.headers["if-modified-since"];
+          const headers: Record<string, string> = {
+            "Content-Type": webAppContentType(hit.file),
+            "Last-Modified": lastModified,
+            "Cache-Control": isEntryFile(hit.rel) ? "no-cache" : "public, max-age=300",
+            "X-Content-Type-Options": "nosniff",
+          };
+          if (since && Date.parse(since) >= Math.floor(info.mtimeMs / 1000) * 1000) {
+            res.writeHead(304, headers);
+            res.end();
+            return;
+          }
+          res.writeHead(200, { ...headers, "Content-Length": String(info.size) });
+          if (req.method === "HEAD") {
+            res.end();
+            return;
+          }
+          createReadStream(hit.file).pipe(res);
+        })
+        .catch(() => {
+          res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Error");
+        });
       return;
     }
 

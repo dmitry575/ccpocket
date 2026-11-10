@@ -255,11 +255,50 @@ jobs:
           path: dist/*.apk
           retention-days: 14
 
+  web:
+    # Fork: browser build served by the bridge at /app/ (deploy/install-web.sh),
+    # so the app opens in Safari and can be added to the iPhone home screen.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read Flutter version from .mise.toml
+        id: mise
+        run: echo "flutter_version=$(grep 'flutter' .mise.toml | sed 's/.*= *\"//' | sed 's/\"//')" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ steps.mise.outputs.flutter_version }}
+          cache: true
+      - run: flutter pub get
+        working-directory: apps/mobile
+      - name: Build web app
+        run: flutter build web --release --base-href /app/
+        working-directory: apps/mobile
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/release/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#release/v}"
+          else
+            VERSION="$(awk '/^version:/ {print $2; exit}' apps/mobile/pubspec.yaml)"
+          fi
+          echo "semver=${VERSION%%+*}" >> "$GITHUB_OUTPUT"
+          echo "full=${VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Package web build
+        run: |
+          mkdir -p dist
+          echo "${{ steps.version.outputs.full }}" > apps/mobile/build/web/fork-build.txt
+          tar -czf "dist/CC-Pocket-web-v${{ steps.version.outputs.semver }}.tar.gz" -C apps/mobile/build web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-bundle
+          path: dist/*.tar.gz
+          retention-days: 14
+
   release:
-    needs: [windows, linux, macos, android]
+    needs: [windows, linux, macos, android, web]
     # Publish whatever built: a flaky runner (e.g. a slow Ubuntu apt mirror
     # for Linux) must not hold back the other platforms.
-    if: ${{ !cancelled() && (needs.windows.result == 'success' || needs.macos.result == 'success' || needs.android.result == 'success' || needs.linux.result == 'success') }}
+    if: ${{ !cancelled() && (needs.windows.result == 'success' || needs.macos.result == 'success' || needs.android.result == 'success' || needs.linux.result == 'success' || needs.web.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -286,6 +325,7 @@ jobs:
           | Windows | `CC-Pocket-Setup-x64-v*.exe` | Installer (Inno Setup); not code-signed, SmartScreen asks once. `CC-Pocket-windows-x64-v*.zip` is the portable build. |
           | macOS | `CC-Pocket-macos-v*.dmg` | Ad-hoc signed, not notarized: on first launch use right-click → Open, or `xattr -d com.apple.quarantine "/Applications/CC Pocket.app"`. Auto-update (Sparkle) is disabled in this build. |
           | Linux | `CC-Pocket-linux-x64-v*.tar.gz` | Unpack and run `ccpocket`. Needs GTK 3, libsecret, libmpv. |
+          | Web / iPhone | `CC-Pocket-web-v*.tar.gz` | Browser build; on the server `deploy/install-web.sh` serves it from the bridge at `https://<bridge>/app/`. In Safari: Share → Add to Home Screen. |
           | Android | `CC-Pocket-android-v*.apk` | Signed with the fork key (or the debug key when the name ends with `-debugsigned`). Allow "unknown sources" to install. |
           | iOS | — | Not buildable here: an installable IPA requires an Apple Developer account. Use the App Store version of CC Pocket. |
 

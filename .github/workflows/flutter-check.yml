@@ -38,10 +38,13 @@ jobs:
           TESTS="${{ github.event.inputs.tests }}"
           if [ -z "$TESTS" ] && [ "${{ github.event_name }}" = "push" ]; then
             # Tests covering the fork's own UI changes.
-            TESTS="test/workspace_shell_screen_test.dart test/release_error_widget_test.dart test/network_endpoint_test.dart test/lite_mode_widgets_test.dart test/home_content_skeleton_test.dart"
+            TESTS="test/workspace_shell_screen_test.dart test/release_error_widget_test.dart test/network_endpoint_test.dart test/lite_mode_widgets_test.dart test/home_content_skeleton_test.dart test/machine_manager_cubit_test.dart"
           fi
           if [ -z "$TESTS" ]; then
             flutter test
           else
             flutter test $TESTS
           fi
+      - name: Build web app (fork serves it at /app/)
+        working-directory: apps/mobile
+        run: flutter build web --release --base-href /app/
