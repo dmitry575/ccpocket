@@ -144,6 +144,11 @@ import {
   normalizeCodexPermissionsMode,
   withDerivedCodexPermissionsMode,
 } from "./codex-permissions.js";
+import { isCodexOnPath, withTimeout } from "./codex-availability.js";
+
+/** Fork: bounds for the Codex branch of the recent-session list. */
+const CODEX_THREAD_LIST_INIT_TIMEOUT_MS = 10_000;
+const CODEX_THREAD_LIST_TIMEOUT_MS = 15_000;
 
 type SystemServerMessage = Extract<ServerMessage, { type: "system" }>;
 type InputClientMessage = Extract<ClientMessage, { type: "input" }>;
@@ -9390,7 +9395,14 @@ export class BridgeWebSocketServer {
     msg: Extract<ClientMessage, { type: "list_recent_sessions" }>,
   ): Promise<{ sessions: unknown[]; hasMore: boolean }> {
     try {
-      return await this.listRecentCodexThreads(msg);
+      // Fork: skip the app-server when codex is not installed, and bound it
+      // when it is, so the rollout scan below always gets its turn.
+      if (!(await isCodexOnPath())) throw new Error("codex is not installed");
+      return await withTimeout(
+        this.listRecentCodexThreads(msg),
+        CODEX_THREAD_LIST_TIMEOUT_MS,
+        "Codex thread/list",
+      );
     } catch (err) {
       console.warn(
         `[ws] Codex thread/list failed, falling back to rollout scan: ${err}`,
@@ -9699,7 +9711,10 @@ export class BridgeWebSocketServer {
   ): Promise<{ sessions: unknown[]; hasMore: boolean }> {
     const limit = msg.limit ?? 20;
     const offset = msg.offset ?? 0;
-    const process = await this.createStandaloneCodexProcess(msg.projectPath);
+    const process = await this.createStandaloneCodexProcess(
+      msg.projectPath,
+      CODEX_THREAD_LIST_INIT_TIMEOUT_MS,
+    );
 
     try {
       const archivedIds = this.archiveStore.archivedIds();
@@ -9749,10 +9764,11 @@ export class BridgeWebSocketServer {
 
   private async createStandaloneCodexProcess(
     projectPath?: string,
+    initTimeoutMs?: number,
   ): Promise<CodexProcess> {
     const proc = new CodexProcess();
     try {
-      await proc.initializeOnly(projectPath ?? process.cwd());
+      await proc.initializeOnly(projectPath ?? process.cwd(), initTimeoutMs);
       return proc;
     } catch (err) {
       proc.stop();

@@ -23,6 +23,12 @@ const { findExternalSessionHolderMock } = vi.hoisted(() => ({
 const { stopIdleBackgroundHolderMock } = vi.hoisted(() => ({
   stopIdleBackgroundHolderMock: vi.fn(async () => false),
 }));
+// Fork: the CI/server box has no codex binary; these tests mock CodexProcess.
+vi.mock("./codex-availability.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./codex-availability.js")>()),
+  isCodexOnPath: vi.fn(async () => true),
+}));
+
 vi.mock("./session-holders.js", () => ({
   findExternalSessionHolder: findExternalSessionHolderMock,
   stopIdleBackgroundHolder: stopIdleBackgroundHolderMock,
@@ -2383,7 +2389,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       await expect(
         (bridge as any).createStandaloneCodexProcess("/tmp/project-a"),
       ).rejects.toThrow("initialize failed");
-      expect(initializeOnly).toHaveBeenCalledWith("/tmp/project-a");
+      expect(initializeOnly).toHaveBeenCalledWith("/tmp/project-a", undefined);
       expect(stop).toHaveBeenCalledTimes(1);
     } finally {
       initializeOnly.mockRestore();
@@ -10211,6 +10217,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
     expect((bridge as any).createStandaloneCodexProcess).toHaveBeenCalledWith(
       "/tmp/project-codex",
+      10_000,
     );
     expect(stop).toHaveBeenCalledTimes(1);
     expect(getCodexSessionIndexMetadataMock).toHaveBeenCalledWith([
