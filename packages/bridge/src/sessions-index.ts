@@ -3037,46 +3037,66 @@ async function findCodexSessionJsonlPath(threadId: string): Promise<string | nul
  * Read past conversation messages from a session's JSONL file.
  * Returns user and assistant messages suitable for display.
  */
+/**
+ * Fork: lines of a JSONL transcript, streamed. Long sessions reach 100-150 MB;
+ * reading them whole into one (two-byte, for Cyrillic) string cost ~280 MB of
+ * heap per resume and crashed the bridge at its 774 MB default heap limit
+ * when the desktop app resumed two such sessions at once.
+ */
+async function* readJsonlLines(path: string): AsyncGenerator<string> {
+  const stream = createReadStream(path, { encoding: "utf-8" });
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of rl) yield line;
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+}
+
 export async function getSessionHistory(
   sessionId: string,
 ): Promise<SessionHistoryMessage[]> {
   const jsonlPath = await findSessionJsonlPath(sessionId);
   if (!jsonlPath) return [];
 
-  let raw: string;
-  try {
-    raw = await readFile(jsonlPath, "utf-8");
-  } catch {
-    return [];
-  }
-
   const messages: SessionHistoryMessage[] = [];
-  const lines = raw.split("\n");
+  try {
+    for await (const line of readJsonlLines(jsonlPath)) {
+      addSessionHistoryLine(line, messages);
+    }
+  } catch {
+    // Unreadable transcript: same as before, whatever was read so far
+    // (nothing when the file could not be opened).
+  }
+  return messages;
+}
 
-  for (const line of lines) {
-    if (!line.trim()) continue;
+function addSessionHistoryLine(line: string, messages: SessionHistoryMessage[]): void {
+  {
+    if (!line.trim()) return;
 
     let entry: Record<string, unknown>;
     try {
       entry = JSON.parse(line) as Record<string, unknown>;
     } catch {
-      continue;
+      return;
     }
 
     const type = entry.type as string;
-    if (type !== "user" && type !== "assistant") continue;
+    if (type !== "user" && type !== "assistant") return;
 
     // Skip context compaction and transcript-only messages (not real user input)
     if (type === "user") {
       if (entry.isCompactSummary === true || entry.isVisibleInTranscriptOnly === true) {
-        continue;
+        return;
       }
     }
 
     const message = entry.message as
       | { role: string; content: unknown[] | string }
       | undefined;
-    if (!message?.content) continue;
+    if (!message?.content) return;
 
     const role = message.role as "user" | "assistant";
     const isMeta = role === "user" && entry.isMeta === true ? true : undefined;
@@ -3094,10 +3114,10 @@ export async function getSessionHistory(
           ...(isMeta ? { isMeta } : {}),
         });
       }
-      continue;
+      return;
     }
 
-    if (!Array.isArray(message.content)) continue;
+    if (!Array.isArray(message.content)) return;
 
     // Filter content to only text and tool_use (skip tool_result for cleaner display)
     const content: SessionHistoryContentItem[] = [];
@@ -3141,8 +3161,6 @@ export async function getSessionHistory(
       });
     }
   }
-
-  return messages;
 }
 
 // ---- Extract full image data from JSONL for a specific message ----
@@ -3281,57 +3299,59 @@ async function buildClaudeMessageImageIndex(
   if (!jsonlPath) return null;
 
   let fileStat;
-  let raw: string;
   try {
     fileStat = await stat(jsonlPath);
-    raw = await readFile(jsonlPath, "utf-8");
   } catch {
     return null;
   }
 
   const imagesByUuid = new Map<string, ExtractedImage[]>();
   let imageBytes = 0;
-  const lines = raw.split("\n");
-  for (const line of lines) {
-    if (!line.trim()) continue;
+  try {
+    // Fork: streamed, see readJsonlLines.
+    for await (const line of readJsonlLines(jsonlPath)) {
+      if (!line.trim()) continue;
 
-    let entry: Record<string, unknown>;
-    try {
-      entry = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
+      let entry: Record<string, unknown>;
+      try {
+        entry = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
 
-    if (entry.type !== "user") continue;
-    if (typeof entry.uuid !== "string") continue;
+      if (entry.type !== "user") continue;
+      if (typeof entry.uuid !== "string") continue;
 
-    const message = entry.message as { content: unknown[] | string } | undefined;
-    if (!message?.content || !Array.isArray(message.content)) continue;
+      const message = entry.message as { content: unknown[] | string } | undefined;
+      if (!message?.content || !Array.isArray(message.content)) continue;
 
-    const images: ExtractedImage[] = [];
-    for (const c of message.content) {
-      if (typeof c !== "object" || c === null) continue;
-      const item = c as Record<string, unknown>;
-      if (item.type !== "image") continue;
+      const images: ExtractedImage[] = [];
+      for (const c of message.content) {
+        if (typeof c !== "object" || c === null) continue;
+        const item = c as Record<string, unknown>;
+        if (item.type !== "image") continue;
 
-      const source = item.source as Record<string, unknown> | undefined;
-      if (!source || source.type !== "base64") continue;
+        const source = item.source as Record<string, unknown> | undefined;
+        if (!source || source.type !== "base64") continue;
 
-      const data = source.data;
-      const mediaType = source.media_type;
-      if (
-        typeof data === "string" &&
-        data.length > 0 &&
-        typeof mediaType === "string" &&
-        mediaType.length > 0
-      ) {
-        images.push({ base64: data, mimeType: mediaType });
-        imageBytes += Buffer.byteLength(data, "utf8");
+        const data = source.data;
+        const mediaType = source.media_type;
+        if (
+          typeof data === "string" &&
+          data.length > 0 &&
+          typeof mediaType === "string" &&
+          mediaType.length > 0
+        ) {
+          images.push({ base64: data, mimeType: mediaType });
+          imageBytes += Buffer.byteLength(data, "utf8");
+        }
+      }
+      if (images.length > 0) {
+        imagesByUuid.set(entry.uuid, images);
       }
     }
-    if (images.length > 0) {
-      imagesByUuid.set(entry.uuid, images);
-    }
+  } catch {
+    return null;
   }
 
   return {
